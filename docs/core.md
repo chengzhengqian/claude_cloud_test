@@ -127,8 +127,9 @@ Reads a table file. I and O come from its `[field]` section (section 6.2).
 
 **`dataset(file)`** `: [I → O]` as recorded in the dataset's `[type]`.
 
-The cached value of a saved dataset. Its recipe isn't expanded. It's a leaf,
-and the dependency between the two datasets is recorded.
+The cached value of a saved dataset. Its id is the id of that dataset's
+root node, so using a saved dataset gives the same ids as writing out its
+calculation (section 6.5).
 
 **`const(value, unit)`** `: [ → value]`
 
@@ -526,9 +527,10 @@ Rules:
    between versions of glue.
 2. **Node ids are content hashes.** The id is the first 12 hex digits of
    the SHA-256 of the node's canonical form: `op`, its parameters with keys
-   sorted, and the ids of its input nodes, without `name`. Saving the same
-   calculation twice gives the same ids. Shared subtrees get the same id
-   everywhere.
+   sorted, and the ids of its input nodes. Labels are left out: `name`,
+   and the `table` label of a `source` node. Saving the same calculation
+   twice gives the same ids. Shared subtrees get the same id everywhere. A
+   leaf's id comes from where its data is, not from its name (section 6.5).
 3. **Nodes are listed leaves first**, so a file reads top to bottom.
 4. **`root`** names the node whose value the file holds.
 
@@ -585,7 +587,8 @@ ed = "../tables/ed.toml"
 
 [recipe.nodes.a41b93e0c7d2]
 op = "source"
-table = "dmft"
+table = "dmft"                   # label: which [recipe.inputs] entry to open
+def = "3f9a0c1e77b2"             # leaf id: what the table reads (section 6.5)
 duplicates = "error"
 digits = 10
 name = "dmft"
@@ -627,10 +630,6 @@ dE_fine = "results/dE_fine.toml"
   saved results), and `const` and `axis` nodes.
 - A `dataset` leaf refers to another dataset file. So saved results form a
   graph across files, and `refresh` follows it in dependency order.
-- Because ids are content hashes, an optional cache of intermediate results,
-  `.glue/cache/<node-id>-<fingerprint>.parquet`, can be shared by every
-  dataset in a project. Two datasets that share a subtree, like the same
-  resampled `dmft.E`, compute it once.
 - Every file stays readable and diffs well in git. The only lines that
   change on a refresh are `created`, `[cache]`, and `[fingerprint]`.
 
@@ -644,6 +643,136 @@ dE_fine = "results/dE_fine.toml"
    uses the recomputed id, so a hand edit is allowed, and visible.
 4. Type-check from the leaves up with the rules in section 2. A dataset's
    `[type]` must match the root's type.
+
+### 6.5 Names and identity
+
+A name is a label you type. It never decides what a node is. Two things
+decide that: where a leaf's data lives, and what calculation a node does.
+
+**Names are unique only where you type them.**
+
+- In one project, every table, view, calc, and dataset name must be
+  different, as now. A clash is an error when the project loads.
+- An included project's names get its prefix: `[[include]] prefix = "old_"`
+  turns its `dmft` into `old_dmft`. Loading a second project in the shell
+  works the same way: `load ../2025/project.toml as old_`.
+- A recipe's `[recipe.inputs]` labels are local to that one file. Two
+  dataset files can both call an input `dmft` and mean different tables.
+
+**A source's id comes from what it reads.** It's the hash of the table's
+resolved definition:
+
+- the data location, as a path relative to the project folder, with
+  `${VAR}` references kept as written
+- the pattern or query, and the reader settings
+- the `[field]` section: inputs, outputs, and their types
+
+The table's name, and where its TOML file sits, are not part of it. So:
+
+| Situation | Same id? |
+|---|---|
+| Two `dmft.toml` files in different folders, reading different data folders | No. They're different leaves, even with the same name. |
+| One table renamed from `dmft` to `dmft_ctqmc` | Yes. Nothing downstream is recomputed. |
+| A table file moved, still reading the same data | Yes |
+| The same project copied to another machine | Yes, because paths are relative to the project folder |
+| A table's `pattern` or `columns` edited | No. Everything that uses it gets new ids and is recomputed. |
+
+The one case this doesn't unify: two projects that reach the same data
+folder by different relative paths, like `data/dmft` and `../p1/data/dmft`,
+get different ids. They compute the same thing twice, but never mix
+results. Using a shared `${VAR}` root in both gives them the same ids.
+
+**A node's id comes from its calculation:** its op, its parameters, and its
+children's ids (6.1). Changing a setting that a view uses changes the tree,
+so it gets new ids.
+
+**A saved dataset is transparent.** A `dataset` leaf has the id of that
+dataset's root node. So these give exactly the same ids downstream:
+
+```
+save C                       # C = d(dmft.E, T), saved as a dataset
+Tpeak = argmax(C)            # uses the dataset
+Tpeak = argmax(d(dmft.E, T)) # writes the calculation out
+```
+
+Saving something never changes the identity of what's built from it. It
+only makes its value available without recomputing.
+
+**Data is identified separately, by fingerprint.** An id says *what* is
+computed. A fingerprint says *from which data*. A cached value is only used
+when both match (6.6). Two leaves can never share a result by accident,
+because they either have different ids or different fingerprints.
+
+### 6.6 Caching, tracking, and invalidation
+
+**The store.** Values are cached by `(node id, fingerprint)`:
+
+| Where | What | Lifetime |
+|---|---|---|
+| memory | any node computed in the session | the session, with a size limit |
+| `.glue/cache/<id>.parquet` | intermediate nodes worth keeping, like resampled or differentiated curves | until `gc`, with a size limit (`cache_mb`) |
+| dataset files | named results | permanent, until you delete them |
+
+A dataset file is a named pointer into this store. It holds a tree, and the
+value of its root for one fingerprint. Loading a dataset file puts its
+nodes and its value back in the store, so the rest of the project can use
+them.
+
+**Fingerprints.** A leaf's fingerprint is computed from its chunks, as in
+0.1: size and modification time (`stat`), or a content hash (`hash`), plus
+the leaf's **epoch** (below). A node's fingerprint is the combined
+fingerprint of the leaves under it. Each cached value also records which
+chunks each of its curves used, so a change to one file only invalidates
+the curves that read it.
+
+**Tracking is automatic, and happens when a value is used.** Nothing runs
+in the background. When a node's value is needed:
+
+1. Compute the current fingerprints of the leaves under it. With `stat`,
+   that's one file-system call per file, which is fast even for thousands
+   of files.
+2. If the store has the value for `(id, fingerprint)`, use it.
+3. If it has a value for the same id with an older fingerprint, find the
+   changed chunks and recompute only the curves that used them. Keep the
+   rest.
+4. Otherwise, compute it.
+
+The same check runs for every intermediate node, not only saved datasets.
+So after one file changes, a plot of a derived quantity recomputes the one
+affected curve all the way up, and reuses everything else.
+
+**Manual invalidation, for what stat can't see.** Some changes don't show
+up in size and modification time: files copied with their times preserved
+(`cp -p`, `rsync -t`), network file systems with coarse timestamps, or a
+fix you know about that glue can't detect. For those:
+
+| Command | Effect |
+|---|---|
+| `invalidate TABLE` | Increase the table's epoch. Every value that depends on it becomes stale. |
+| `invalidate TABLE where U=2.0` | Mark only the matching chunks as changed. Only the curves that read them are recomputed. |
+| `invalidate NAME` | For a view, calc, or dataset: drop its cached values, and those of the nodes under it that aren't used elsewhere. |
+
+Epochs are stored in `.glue/epochs.toml`, one number per leaf id. Deleting
+the file makes everything stale once, which is safe.
+
+**Related commands:**
+
+| Command | Effect |
+|---|---|
+| `status [NAME]` | Fresh or stale, for datasets and, with `--all`, for cached intermediate nodes |
+| `why NAME` | The tree under NAME, with each node's state, down to the leaves and chunks that changed |
+| `refresh NAME \| --all` | Recompute what's stale now, instead of waiting for the next use. Pinned datasets are skipped. |
+| `gc` | Delete cached values whose ids no longer appear in any view, calc, or dataset of the project |
+
+**Pinned datasets** keep the value for their recorded fingerprint, even when
+their leaves change. Anything built on a pinned dataset uses that old value,
+and its own fingerprint includes the pinned value's hash. So it's never
+mixed up with results from the new data.
+
+**What is guaranteed.** A value is only reused when its node id and its
+fingerprint both match. The id fixes the calculation, including every
+parameter. The fingerprint fixes the data. Names, file locations, and the
+order in which things were saved can't cause a wrong reuse.
 
 ---
 
@@ -742,11 +871,9 @@ curve along n has one point, and the surface language says so.
 
 ## 9. Open questions
 
-1. **Node ids.** Content hashes make saving deterministic and let datasets
-   share intermediate results. The cost is that ids are unreadable, which
-   the optional `name` only partly fixes. The alternative is sequential ids
-   like `n1, n2, ...`, which are readable but change whenever a tree is
-   rebuilt.
+1. **Node ids.** Content hashes make saving deterministic, and they're what
+   makes identity and caching work (6.5, 6.6). The cost is that ids are
+   unreadable, which the optional `name` only partly fixes.
 2. **Exact or ragged.** Is "path inputs exact, content inputs ragged" the
    right default for your data? An input can also be declared in the table
    file, as `exact = [...]`, when a content column is on a shared grid,
