@@ -44,6 +44,17 @@ The value of a field is:
 - a finite set of **points** P. Each point assigns a value to every input.
 - for every point p in P, one value for each output.
 
+**Every node is a field.** Every operation in sections 2 and 3 takes
+fields and returns one field, so any step of any calculation can be shown,
+saved, loaded, used as a grid, or combined like any other. Plots and
+exports consume a field and produce a figure or a file. They come at the
+end of a calculation, and aren't part of it.
+
+**All outputs of a field share its points.** Quantities sampled at
+different points can only become outputs of one field after they're
+resampled onto shared points (`align`), or joined with missing values where
+one has none.
+
 **The one rule every field obeys: the inputs determine the outputs.** No two
 points have the same input values. Every elementary operation keeps this
 true, provided its checks pass. The two places where it can fail are
@@ -355,14 +366,15 @@ select(filter(join({ g = union(points(A), points(B)), r = R }, drop),
               [along >= r.lo, along <= r.hi]), [])
 ```
 
-**`align(A, B, along, grid, method, extrapolate, fewpoints)`**
+**`align({ a = A, b = B }, along, grid, method, extrapolate, fewpoints, unmatched)`**
+`: [I_A ∪ I_B → a.O_A ∪ b.O_B]`
 
-Resamples both A and B onto the same grid. It returns a pair, so it only
-appears as a step inside a surface expansion, never as a saved node:
+Resamples A and B onto the same grid and joins them, so the result is one
+field with both sets of outputs on shared points:
 
 ```
-A' = resample(A, along, grid, method, extrapolate, fewpoints)
-B' = resample(B, along, grid, method, extrapolate, fewpoints)
+join({ a = resample(A, along, grid, method, extrapolate, fewpoints),
+       b = resample(B, along, grid, method, extrapolate, fewpoints) }, unmatched)
 ```
 
 **`legendre(F, along, output, method, branches, flat_tol)`**
@@ -431,19 +443,19 @@ of their input.
 
 ### 5.3 Arithmetic between fields: when to interpolate
 
-`A ⊕ B` translates to `map(join({ a = A', b = B' }, unmatched), { value = "a.y ⊕ b.y" })`.
-
-A' and B' are A and B, possibly resampled. For each input u that A and B
-share:
+`A ⊕ B` translates to `map(J, { value = "a.y ⊕ b.y" })`, where J is
+`join({ a = A, b = B }, unmatched)` if nothing needs aligning, and
+`align({ a = A, b = B }, u, ...)` if input u does. For each input u that A
+and B share:
 
 - **Exact inputs** are joined as they are. An input is exact when its
   values come from a fixed set: path coordinates, and inputs produced by
   `axis`.
 - **Ragged inputs** are aligned first. An input is ragged when its values
   vary from curve to curve: content columns like T in a file, and inputs
-  produced by `span` or `swap`. The translation inserts
-  `align(A, B, u, grid, method, extrapolate, fewpoints)`, with the grid
-  built from the `grid` setting:
+  produced by `span` or `swap`. The translation uses
+  `align({ a = A, b = B }, u, grid, method, extrapolate, fewpoints, unmatched)`,
+  with the grid built from the `grid` setting:
 
 | `grid` setting | Grid node |
 |---|---|
