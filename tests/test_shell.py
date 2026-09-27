@@ -106,3 +106,11 @@ def test_new_table_and_guess(sh, proj):
     run(sh, 'new table a2 pattern="U_{U}/n_{n}.dat" columns=["T", "E"] root="data/a"')
     assert "a2" in (proj / "project.toml").read_text()
     assert "4 curves" in run(sh, "info a2")
+
+
+def test_save_recipe_only_writes_view(sh, proj):
+    run(sh, "r = a.E / g.gap")
+    out = run(sh, "save r --recipe-only")
+    assert "wrote view r" in out
+    assert 'r = "a.E / g.gap"' in (proj / "project.toml").read_text()
+    assert "view     r" in run(sh, "ls")

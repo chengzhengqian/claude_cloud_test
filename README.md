@@ -10,7 +10,8 @@ A small tool for scientific data spread across many files, like
   can tell when the inputs changed and recompute only the affected curves.
 
 It connects existing tools (NumPy, pandas, SciPy, matplotlib, gnuplot) rather
-than replacing them. The design is in [docs/spec.md](docs/spec.md).
+than replacing them. How to use it: [docs/reference.md](docs/reference.md).
+The design: [docs/spec.md](docs/spec.md).
 
 ## Install
 
@@ -72,4 +73,5 @@ df2 = (s.dmft.E - s.ed.E).to_pandas(where="U=2.0", method="cubic", duplicates="m
 - `examples/hubbard/`: a realistic sweep with four sources, an analysis
   script, figures, and saved datasets
 - `tests/`: `python -m pytest`
+- `docs/reference.md`: the usage reference
 - `docs/spec.md`: the specification

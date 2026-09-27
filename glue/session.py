@@ -357,7 +357,11 @@ class Session:
 
     # ---------------------------------------------------------------- variables and settings
 
-    def define(self, name, ast, overrides=None):
+    def define(self, name, expr, overrides=None, **settings):
+        """Define a session variable. expr is text or an AST; settings apply like `with`."""
+        ast = lang.parse_expression(expr) if isinstance(expr, str) else expr
+        overrides = dict(overrides or {})
+        overrides.update({k: convert(k, v) for k, v in settings.items()})
         check_name(name, "variable")
         if name in self.tables:
             raise GlueError(f"variable {name!r} clashes with the table of the same name")
@@ -384,6 +388,11 @@ class Session:
         del self.variables[name]
 
     def set_setting(self, key, node):
+        if isinstance(node, str):
+            try:
+                node = lang.parse_optvalue_text(node)
+            except GlueError:
+                node = lang.Str(node)
         if key.startswith("plot."):
             k = key[5:]
             if k not in PLOT_SETTINGS:
@@ -424,6 +433,14 @@ class Session:
     # ---------------------------------------------------------------- datasets
 
     def save(self, name, path=None, where=(), grid=None, fmt=None, unit=None, recipe_only=False):
+        if isinstance(where, str):
+            where = lang.parse_where_text(where)
+        if isinstance(grid, str):
+            from .settings import parse_grid
+
+            grid = parse_grid(grid)
+        if recipe_only:
+            return self.save_view(name)
         info, report = D.save(self, name, path, where, grid, fmt, unit, recipe_only)
         t = D.table_from_info(info)
         replaced = None
