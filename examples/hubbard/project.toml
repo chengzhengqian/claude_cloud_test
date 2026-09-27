@@ -1,0 +1,31 @@
+glue = "0.1"
+kind = "project"
+name = "hubbard"
+description = "Energy and specific heat of a Hubbard-like model from DMFT, ED, and QMC"
+
+[tables]
+dmft = "tables/dmft.toml"
+ed   = "tables/ed.toml"
+qmc  = "tables/qmc.toml"
+gap  = "tables/gap.toml"
+
+[views]
+dE = "dmft.E - ed.E"
+C  = { expr = "d(dmft.E, T)", description = "specific heat per site", unit = "1", label = "C" }
+
+[settings]
+method = "pchip"
+grid = "overlap(n=200)"
+
+[plot]
+cmap = "viridis"
+
+[plugins]
+modules = ["physops"]
+path = ["ops"]
+
+[datasets]
+dE_fine = "results/dE_fine.toml"
+Tpeak = "results/Tpeak.toml"
+ratio = "results/ratio.toml"
+C_log = "results/C_log.toml"

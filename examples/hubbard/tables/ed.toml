@@ -1,0 +1,23 @@
+glue = "0.1"
+kind = "table"
+description = "Exact diagonalization on an 8-site cluster. Coarser T grid, no runs for U=4 n=0.8."
+
+[source]
+locator = "glob"
+root = "../data/ed"
+pattern = "U_{U}/J_{J}/n_{n}.dat"
+
+[source.reader]
+format = "text"
+columns = ["T", "E"]
+
+[curves]
+x = "T"
+
+[columns.T]
+unit = "t"
+label = "temperature"
+
+[columns.E]
+unit = "t"
+label = "energy per site"

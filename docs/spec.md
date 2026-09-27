@@ -133,7 +133,10 @@ kind = "table"    # or "project" or "dataset"
 ### 3.1 Common rules
 
 - **Relative paths** are relative to the directory of the file that
-  contains them.
+  contains them. In the shell, `load` and `run` paths are relative to the
+  script being run, or to the current directory when typed. Output paths
+  (`plot > FILE`, `save ... as`, `export ... to`) are relative to the
+  project directory when a project is loaded.
 - **Environment variables** in paths are expanded when written as
   `${NAME}`. Example: `root = "${GLUE_DATA}/dmft"`. This lets the same
   interface file work on a cluster and on a laptop.
@@ -218,6 +221,9 @@ run_*/beta_{beta}/G_{k:int}.dat   run_03/beta_10/G_4.dat
 
 Files that don't match the template are skipped. `scan` reports how many
 were skipped (section 7.8).
+
+If several files give the same curve key, which can happen with `*` in the
+template, their rows are joined in path order.
 
 If a placeholder name also appears in `[columns]` with a `type`, the two
 types must agree.
@@ -432,6 +438,11 @@ path = ["ops"]                      # added to the Python import path
 Tables, views, and datasets share one namespace. A duplicate name is an
 error when the project loads.
 
+A session variable may have the same name as a view or dataset. It hides
+that view or dataset for the rest of the session, and the shell prints a
+note. This allows a script that saves a dataset to run again. A variable
+can't have the name of a table.
+
 ### 5.3 Views and settings
 
 A view is evaluated with the current settings, unless the view sets its own.
@@ -539,7 +550,8 @@ entries. A chunk entry is its relative path plus:
   copying files, which changes modification times.
 
 For inputs that are themselves datasets, the digest is the input dataset's
-`[cache].sha256`.
+`[cache].sha256`. A dataset input is tracked as a whole: when it changes,
+every curve that uses it is recomputed.
 
 ### 6.4 Status and refresh
 
@@ -712,11 +724,12 @@ matching curve. Example: `dmft.E / n`, or `dmft.E - gap.gap`.
    are resampled onto a grid from the `grid` setting, with the `method`,
    `extrapolate`, `duplicates`, and `fewpoints` settings. The result has a
    new grid origin.
-6. If a matched pair has exactly equal x arrays and `method` interpolates
-   through the data points (every method except `smooth`), that pair is not
-   resampled. The result is the same either way. This only saves time.
-7. With `strict = true`, step 5 is an error unless the statement has an
-   explicit `with grid=...` or the operands are wrapped in `resample`.
+6. With `strict = true`, step 5 is an error unless the grid comes from a
+   `with grid=...` clause or `using(...)`, or the operands are wrapped in
+   `resample`.
+
+A name used twice in one expression is the same node, so `dE - dE` is
+row-aligned and gives exactly zero.
 
 **Units.** `+` and `-` keep the unit when both sides have the same unit.
 Other operations drop the unit. It can be set again with `unit=` on `save`,
@@ -753,7 +766,7 @@ Interpolation methods, used in the `method` setting:
 
 | Method | SciPy class | Minimum points |
 |---|---|---|
-| `linear` | `numpy.interp` | 2 |
+| `linear` | `make_interp_spline(k=1)` | 2 |
 | `cubic` | `CubicSpline` (not-a-knot) | 4 |
 | `pchip` | `PchipInterpolator` | 2 |
 | `akima` | `Akima1DInterpolator` | 5 |
@@ -771,7 +784,7 @@ report.
 |---|---|---|---|
 | `abs sqrt exp log log10 sin cos tan sinh cosh tanh` | any | same kind | Elementwise. |
 | `resample(y, grid=, method=)` | Curves | Curves | Evaluate each curve on a new grid. |
-| `d(y, x, order=1, method=, grid=)` | Curves | Curves | Derivative along x. Default is at the input points. `method="fd"` uses finite differences (`numpy.gradient`) with no fitting. |
+| `d(y, x, order=1, method=, grid=)` | Curves | Curves | Derivative along x. Default is at the input points, after sorting and the `duplicates` setting. `method=fd` uses finite differences (`numpy.gradient`) with no fitting. |
 | `int(y, x, method="trapz")` | Curves | Curves | Cumulative integral from the first point. `method` is `trapz`, or a spline method to integrate the fitted spline. |
 | `integral(y, x, method="trapz")` | Curves | Keyed | Integral over the whole curve. |
 | `max min mean first last count` | Curves | Keyed | Reduce each curve to one number. |
@@ -779,6 +792,7 @@ report.
 | `at(y, x=v)` | Curves | Keyed | Each curve evaluated at `v` with the current method. `y @ x=v` is the same. |
 | `at(y, x=[v1, v2])` | Curves | Curves | Each curve evaluated at these points. |
 | `stack(a=y1, b=y2, tag="source")` | Curves or Keyed | same kind | Stack families with the same coordinates and x name. Adds a `str` coordinate `tag` whose values are the argument names. No resampling. |
+| `using(y, KEY=VALUE, ...)` | any | same kind | Evaluate `y` with these settings. Saving a dataset writes views that have their own settings as `using(...)`, so recipes keep them. |
 
 Custom functions registered by plugins are called the same way (section 11).
 
@@ -793,7 +807,7 @@ Commands start with a reserved word. Arguments in `[ ]` are optional.
 | `load FILE` | Load a project, table, or dataset file. Loading a second project merges its names. Duplicates are an error. |
 | `reload` | Reload all loaded files from disk. |
 | `guess DIR` | Look at a directory tree and suggest a table definition: a path template from `name_number` segments, and the column count from the first file. Prints TOML and does not write it. |
-| `new table NAME pattern=... columns=... [root=...] [format=text]` | Write a table file and add it to the current project. |
+| `new table NAME pattern=... columns=... [root=...] [x=...] [format=text] [file=...]` | Write a table file and add it to the current project. Options are separated by spaces or commas. |
 | `edit NAME` | Open the file behind `NAME` in `$EDITOR`, then reload it. |
 | `scan [NAME]` | Rebuild the chunk index. Reports matched files, skipped files, and coordinate values found. |
 
@@ -805,7 +819,7 @@ Commands start with a reserved word. Arguments in `[ ]` are optional.
 | `info NAME` | Schema, coordinates with their value counts, number of curves and chunks. Uses the chunk index only. |
 | `values NAME.COORD` | Distinct values of a coordinate. Uses the chunk index when possible. |
 | `show EXPR [where ...] [limit N]` | Evaluate and print rows. Default `limit 20`. |
-| `explain STATEMENT` | Print the operation tree and which chunks and columns would be read, without reading any data. |
+| `explain STATEMENT` | Print the alignment and interpolation steps and which chunks and columns would be read. Works on expressions, assignments, `plot ...`, and `save NAME`. Only sources with content coordinates, such as SQLite, need a query to list their keys. |
 
 #### Computing and saving
 
@@ -833,15 +847,21 @@ plot + Y ...            # add to the current figure
   text.
 - `vs X` is the x column for `Curves` (the default is the curve's x), or a
   coordinate for `Keyed`, as in `plot max(dmft.E) vs U by J where n=0.5`.
-- `by C1` colors curves by `C1`. A numeric `C1` uses a colormap and a
-  colorbar. A string `C1` uses separate colors and a legend. `by C1, C2`
-  also uses line style for `C2`. Line style can only mean one thing, so
-  `by C1, C2` is only allowed with a single `Y`.
-- **Every coordinate must be fixed by `where`, listed in `by`, or used as
-  `vs X`.** Otherwise curves for different values would overlap with the
-  same color and style, so it's an error that names the free coordinates.
-  One exception: if exactly one coordinate is free and there is no `by`,
-  that coordinate is used as `by`.
+- `by C1` colors curves by `C1`. A numeric `C1` uses a colormap, with a
+  legend for up to 6 values and a colorbar for more. A string `C1` uses
+  separate colors and a legend. `by C1, C2` also uses line style for `C2`.
+  Line style can only mean one thing, so `by C1, C2` is only allowed with a
+  single `Y`. Without `by`, each `Y` gets its own color.
+- **Every coordinate must have a single value in the plotted data, be
+  listed in `by`, or be used as `vs X`.** Otherwise curves for different
+  values would overlap with the same color and style, so it's an error
+  that names the free coordinates. One exception: if exactly one
+  coordinate is free and there is no `by`, that coordinate is used as `by`.
+  For `Keyed` values without `vs`, a single free coordinate is used as `vs`.
+- The title defaults to the coordinates with a single value, like
+  `U=2.0, n=1.0`.
+- Values with an error column, plotted `with errorbars`, are drawn as
+  points with error bars unless a `style` is given.
 - `> FILE` saves the figure. The format comes from the extension. With the
   gnuplot backend, `> fig.gp` writes a script plus its data file.
 

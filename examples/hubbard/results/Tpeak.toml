@@ -1,0 +1,40 @@
+glue = "0.1"
+kind = "dataset"
+name = "Tpeak"
+created = 2026-09-27T19:18:42Z
+tool = "glue 0.1.0"
+pinned = false
+description = ""
+
+[recipe]
+expr = "argmax(d(dmft.E, T))"
+source_expr = "argmax(C)"
+where = ""
+
+[recipe.inputs]
+dmft = "../tables/dmft.toml"
+
+[recipe.settings]
+method = "pchip"
+grid = "overlap(n=200)"
+extrapolate = "nan"
+duplicates = "mean"
+fewpoints = "linear"
+unmatched = "drop"
+nan_rows = "drop"
+
+[curves]
+by = ["U", "J", "n"]
+y = ["Tpeak"]
+
+[cache]
+file = "Tpeak.parquet"
+format = "parquet"
+sha256 = "d37e41cdbf6fa765c1752d5e7619f1494b684bad79074d190b6124c07bc1d748"
+rows = 48
+curves = 48
+dropped = 0
+
+[fingerprint]
+mode = "stat"
+dmft = "sha256:119a06fbe6b8846a"

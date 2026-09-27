@@ -1,0 +1,45 @@
+glue = "0.1"
+kind = "dataset"
+name = "C_log"
+created = 2026-09-27T19:18:42Z
+tool = "glue 0.1.0"
+pinned = false
+description = ""
+
+[recipe]
+expr = "resample(d(dmft.E, T), grid=logspace(0.01, 1.0, 300))"
+source_expr = "resample(C, grid=logspace(0.01, 1.0, 300))"
+where = ""
+
+[recipe.inputs]
+dmft = "../tables/dmft.toml"
+
+[recipe.settings]
+method = "pchip"
+grid = "overlap(n=200)"
+extrapolate = "nan"
+duplicates = "mean"
+fewpoints = "linear"
+unmatched = "drop"
+nan_rows = "drop"
+
+[curves]
+by = ["U", "J", "n"]
+x = "T"
+y = ["C_log"]
+
+[columns.T]
+unit = "t"
+label = "temperature"
+
+[cache]
+file = "C_log.parquet"
+format = "parquet"
+sha256 = "ad40621c817a3411b496c0688654a3e42fb908e5addebf62ad3451ea7347f250"
+rows = 14400
+curves = 48
+dropped = 0
+
+[fingerprint]
+mode = "stat"
+dmft = "sha256:119a06fbe6b8846a"

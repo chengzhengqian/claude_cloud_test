@@ -1,0 +1,16 @@
+glue = "0.1"
+kind = "table"
+description = "Excitation gap, one value per run. No x column, so this is a keyed table."
+
+[source]
+locator = "glob"
+root = "../data/gap"
+pattern = "U_{U}/J_{J}/n_{n}.dat"
+
+[source.reader]
+format = "text"
+columns = ["gap"]
+
+[columns.gap]
+unit = "t"
+label = "gap"

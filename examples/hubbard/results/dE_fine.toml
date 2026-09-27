@@ -1,0 +1,50 @@
+glue = "0.1"
+kind = "dataset"
+name = "dE_fine"
+created = 2026-09-27T19:18:42Z
+tool = "glue 0.1.0"
+pinned = false
+description = ""
+
+[recipe]
+expr = "dmft.E - ed.E"
+source_expr = "dE"
+where = ""
+
+[recipe.inputs]
+dmft = "../tables/dmft.toml"
+ed = "../tables/ed.toml"
+
+[recipe.settings]
+method = "pchip"
+grid = "overlap(n=400)"
+extrapolate = "nan"
+duplicates = "mean"
+fewpoints = "linear"
+unmatched = "drop"
+nan_rows = "drop"
+
+[curves]
+by = ["U", "J", "n"]
+x = "T"
+y = ["dE_fine"]
+
+[columns.T]
+unit = "t"
+label = "temperature"
+
+[columns.dE_fine]
+unit = "t"
+
+[cache]
+file = "dE_fine.parquet"
+format = "parquet"
+sha256 = "20be5cd7d0ececdf2111ba1a2d23c99bdbb378a9c7de8f6d2298c88a2bc88833"
+rows = 17600
+curves = 44
+dropped = 0
+
+[fingerprint]
+mode = "stat"
+dmft = "sha256:119a06fbe6b8846a"
+ed = "sha256:5a8e04d740741022"

@@ -1,0 +1,42 @@
+glue = "0.1"
+kind = "dataset"
+name = "ratio"
+created = 2026-09-27T19:18:42Z
+tool = "glue 0.1.0"
+pinned = false
+description = ""
+
+[recipe]
+expr = "Tpeak / gap.gap"
+source_expr = "Tpeak / gap.gap"
+where = ""
+
+[recipe.inputs]
+Tpeak = "Tpeak.toml"
+gap = "../tables/gap.toml"
+
+[recipe.settings]
+method = "pchip"
+grid = "overlap(n=200)"
+extrapolate = "nan"
+duplicates = "mean"
+fewpoints = "linear"
+unmatched = "drop"
+nan_rows = "drop"
+
+[curves]
+by = ["U", "J", "n"]
+y = ["ratio"]
+
+[cache]
+file = "ratio.parquet"
+format = "parquet"
+sha256 = "c9679574b57aec7ab49c16ea2b24855b8730e9c78be796218f5644dcd5a89025"
+rows = 48
+curves = 48
+dropped = 0
+
+[fingerprint]
+mode = "stat"
+Tpeak = "sha256:d37e41cdbf6fa765"
+gap = "sha256:2540771a301eadb0"

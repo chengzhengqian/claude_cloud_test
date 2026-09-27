@@ -1,0 +1,78 @@
+> load project.toml
+loaded project hubbard: 4 tables, 2 views, 0 datasets
+> info dmft
+  table dmft: data/dmft/U_{U}/J_{J}/n_{n}.dat
+    DMFT energy per site vs temperature
+    48 files
+    48 curves
+    coordinate U          4 values: 1.0, 2.0, 3.0, 4.0  (path)
+    coordinate J          4 values: 0.0, 0.1, 0.2, 0.3  (path)
+    coordinate n          3 values: 0.8, 0.9, 1.0  (path)
+    x          T [t]
+    value      E [t]
+> plot dmft.E by J where U=2.0, n=1.0 with logx > figs/01_dmft_energy.png
+  saved figs/01_dmft_energy.png
+> plot dmft=dmft.E, ed=ed.E by U where J=0.1, n=1.0 > figs/02_dmft_vs_ed.png
+  saved figs/02_dmft_vs_ed.png
+> explain plot dE by U where J=0.1, n=1.0
+  dE = dmft.E - ed.E
+    align dmft.E and ed.E: grid overlap(n=200), method pchip
+    dmft: read 4 of 48 files, columns E, T
+    ed: read 4 of 44 files, columns E, T
+    result: 4 curves on (U, J, n)
+> plot dE by U where J=0.1, n=1.0 > figs/03_dmft_minus_ed.png
+  aligned dmft.E, ed.E: 4 curves matched on (U, J, n), grid overlap(n=200), method pchip
+  saved figs/03_dmft_minus_ed.png
+> set duplicates mean
+> rel = (dmft.E - ed.E) / gap.gap with grid=overlap(n=400)
+> plot rel by U where J=0.1, n=0.9 > figs/04_difference_over_gap.png
+  aligned dmft.E, ed.E: 4 curves matched on (U, J, n), grid overlap(n=400), method pchip
+  curves with repeated T (mean): 1
+  saved figs/04_difference_over_gap.png
+> plot C by J where U=2.0, n=1.0 with logx > figs/05_specific_heat.png
+  saved figs/05_specific_heat.png
+> Tpeak = argmax(C)
+> plot Tpeak vs U by J where n=1.0 > figs/06_peak_position.png
+  saved figs/06_peak_position.png
+> ratio = Tpeak / gap.gap
+> plot ratio vs U by J where n=1.0 with ylim=(0.3, 0.5) > figs/07_peak_over_gap.png
+  saved figs/07_peak_over_gap.png
+> width = fwhm(C)
+> plot width vs U by n where J=0.1 > figs/08_peak_width.png
+  saved figs/08_peak_width.png
+> S = int(C / T, T)
+> plot S by U where J=0.1, n=1.0 > figs/09_entropy.png
+  saved figs/09_entropy.png
+> plot qmc=qmc.E, dmft=dmft.E where U=4.0, J=0.1, n=1.0, T=:0.55 with errorbars > figs/10_qmc_vs_dmft.png
+  saved figs/10_qmc_vs_dmft.png
+> dQ = qmc.E - dmft.E with grid=like(qmc.E)
+> plot dQ by U where J=0.1, n=1.0 with style=linespoints > figs/11_qmc_minus_dmft.png
+  aligned qmc.E, dmft.E: 4 curves matched on (U, J, n), grid like(qmc.E), method pchip
+  saved figs/11_qmc_minus_dmft.png
+> save dE as results/dE_fine grid=overlap(n=400)
+  dropped 4 unmatched keys (only in dmft.E)
+  aligned dmft.E, ed.E: 44 curves matched on (U, J, n), grid overlap(n=400), method pchip
+  curves with repeated T (mean): 1
+  wrote results/dE_fine.toml and results/dE_fine.parquet (44 curves, 17600 rows)
+> save Tpeak
+  wrote results/Tpeak.toml and results/Tpeak.parquet (48 curves, 48 rows)
+  dataset Tpeak replaces the variable of the same name
+> save ratio
+  wrote results/ratio.toml and results/ratio.parquet (48 curves, 48 rows)
+  dataset ratio replaces the variable of the same name
+> C_log = resample(C, grid=logspace(0.01, 1.0, 300))
+> save C_log
+  resampled d(dmft.E, T): 48 curves, grid logspace(0.01, 1.0, 300), method pchip
+  wrote results/C_log.toml and results/C_log.parquet (48 curves, 14400 rows)
+  dataset C_log replaces the variable of the same name
+> status
+  dE_fine        fresh      
+  Tpeak          fresh      
+  ratio          fresh      
+  C_log          fresh      
+> plot Tpeak vs J by U where n=0.9 > figs/12_saved_peak_vs_J.png
+  saved figs/12_saved_peak_vs_J.png
+> export dE_fine to exports/dE_fine.csv where J=0.1
+  wrote exports/dE_fine.csv (11 curves, 4400 rows)
+> export C_log to exports/C_log.dat where U=2.0, n=1.0
+  wrote exports/C_log.dat (4 curves, 1200 rows)

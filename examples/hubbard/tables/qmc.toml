@@ -1,0 +1,21 @@
+glue = "0.1"
+kind = "table"
+description = "Lattice QMC energies with error bars, stored in SQLite by inverse temperature"
+
+[source]
+locator = "sqlite"
+file = "../data/qmc.db"
+query = "SELECT u AS U, j AS J, n, 1.0 / beta AS T, energy AS E, energy_err AS dE FROM runs"
+
+[curves]
+by = ["U", "J", "n"]
+x = "T"
+
+[columns.T]
+unit = "t"
+label = "temperature"
+
+[columns.E]
+unit = "t"
+label = "energy per site"
+error = "dE"
