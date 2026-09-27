@@ -103,13 +103,13 @@ same grid node are always exactly equal.
 
 ## 2. Elementary operations
 
-Twenty operations, in five groups. Every parameter is required in a core
+Twenty-one operations, in five groups. Every parameter is required in a core
 tree. Section 5 lists which ones the surface language fills in.
 
 | Group | Operations |
 |---|---|
 | leaves | `source`, `dataset`, `const`, `axis` |
-| structure | `select`, `rename`, `filter`, `slice`, `join`, `stack`, `points`, `union`, `span` |
+| structure | `select`, `rename`, `transform`, `filter`, `slice`, `join`, `stack`, `points`, `union`, `span` |
 | pointwise | `map` |
 | along an input | `resample`, `deriv`, `cumint`, `reduce`, `swap` |
 | extension | `apply` |
@@ -163,7 +163,27 @@ Keep only the listed outputs. An empty list gives F's point set.
 
 **`rename(F, mapping)`** `: [I' → O']`
 
-Rename inputs or outputs. The new names must not clash.
+Rename inputs or outputs. The new names must not clash. No values change.
+
+**`transform(F, input, to, formula)`** `: [(I − input) ∪ {to} → O]`
+
+Replaces the input `input` with a new input `to`, whose value at each point
+is `formula`. Use it when a source stores a quantity in different units or
+a different convention, like u = U/D, or to change variables, like t = T/Δ.
+
+- The formula uses the `map` language (2.3). It can refer to the input
+  being replaced, other inputs, outputs, and numbers.
+- New float values are rounded as in 1.3, so `0.3 / 1.5` becomes `0.2` and
+  matches the value 0.2 from another source.
+- **Check:** no two points may end up with the same input values. A
+  formula that is strictly monotonic in the replaced input, and uses
+  nothing else that varies, always passes, like `u * 2.0`. Otherwise it's
+  checked on the data, and an error names the points that collide.
+- The new input is **exact** if the formula uses only exact inputs and
+  numbers. It's **ragged** if it uses a ragged input or an output (5.3).
+- `to` may equal `input` to rescale in place.
+
+Rescaling an output needs no special operation. It's a `map`.
 
 **`filter(F, predicate)`** `: [I → O]`
 
@@ -404,6 +424,7 @@ data and skip work. They never change a result.
 |---|---|---|
 | L1 | `filter` or `slice` on input u commutes with `map`, `select`, `rename`, and with every along-x operation where x ≠ u. | Reading only the files a result needs. |
 | L2 | `filter` on input u passes into each `join` operand that has u, and is dropped for operands without it. | The same, through joins. |
+| L2b | A `filter` on the new input of a `transform` whose formula uses only exact inputs and numbers can be checked against the file index: the formula is evaluated on each file's path values, without reading data. Other filters on it are applied after reading. | Reading less data when inputs are rescaled. |
 | L3 | `filter` or `slice` on the input x does **not** commute with `resample`, `deriv`, `cumint`, `reduce`, or `swap` along x. | Why x ranges are applied after these. |
 | L4 | `map(map(F, f), g) = map(F, g after f)`. | Fusing pointwise steps. |
 | L5 | `join` is associative and commutative, up to output labels. | Reordering joins. |
@@ -452,8 +473,9 @@ and B share:
   values come from a fixed set: path coordinates, and inputs produced by
   `axis`.
 - **Ragged inputs** are aligned first. An input is ragged when its values
-  vary from curve to curve: content columns like T in a file, and inputs
-  produced by `span` or `swap`. The translation uses
+  vary from curve to curve: content columns like T in a file, inputs
+  produced by `span` or `swap`, and inputs produced by a `transform` whose
+  formula uses a ragged input or an output. The translation uses
   `align({ a = A, b = B }, u, grid, method, extrapolate, fewpoints, unmatched)`,
   with the grid built from the `grid` setting:
 
@@ -477,13 +499,16 @@ Whether an input is exact or ragged is worked out from the tree alone, with
 no data. The rules: `source` marks path and constant inputs exact, and
 content inputs ragged. `resample` gives x the property of the grid's x.
 `join` makes an input ragged if either operand has it ragged. `swap` makes
-the new input ragged. Everything else keeps the property.
+the new input ragged. `transform` makes it exact only if its formula uses
+exact inputs and numbers alone. Everything else keeps the property.
 
 ### 5.4 Other surface forms
 
 | Surface | Core |
 |---|---|
 | `y[U=2.0, T=0.1:0.5]` | `filter(y, [...])` |
+| `rename(y, u=U)` | `rename(y, { u = U })` |
+| `transform(y, u, U = u * 2.0)` | `transform(y, u, U, "u * 2.0")` |
 | a bare input name in arithmetic, like T in `C / T` | a reference to that input inside the `map` formula: `map(C, { value = "E / T" })` |
 | `... where U=2.0` | `filter(root, [...])`, pushed down by L1 and L2 |
 | `y @ T=0.1` | `eval(y, T, 0.1, method, extrapolate, fewpoints)` |
@@ -567,6 +592,22 @@ axis = "T"                        # default axis for surface expressions
 
 Path placeholders must be inputs. Content columns are outputs unless listed
 in `inputs`.
+
+A table can also fix a source's conventions once, so every expression sees
+canonical names and units. These steps are applied right after reading, in
+the order written, and are part of the table's definition, so they're part
+of its leaf id (6.5):
+
+```toml
+[field.transform]                 # inputs, as transform(...)
+U = { from = "u", formula = "u * 2.0" }
+
+[field.map]                       # outputs, as map(...)
+E = "E_D * 2.0"
+```
+
+Renaming needs no extra section: name the placeholder with the canonical
+name (`pattern = "u_{U}/..."`), and name the file's columns in `columns`.
 
 **Calc and dataset files:**
 
