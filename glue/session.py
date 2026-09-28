@@ -201,23 +201,26 @@ class Session:
 
     # ---------------------------------------------------------------- loading
 
-    def load(self, path, prefix=""):
+    def load(self, path, prefix="", name=None):
+        """Load a file. `name` renames a single table, dataset, or calc. For a project it is a prefix (old -> old_dmft)."""
         path = os.path.abspath(path)
         data = read_toml(path)
         kind = data.get("kind")
+        if name and kind == "project":
+            prefix, name = prefix + (name if name.endswith("_") else name + "_"), None
         if kind == "project":
             self._load_project(path, data, prefix=prefix, included=bool(prefix) and self.project_path is not None)
         elif kind == "table":
             if self.index_dir is None:
                 self._set_dirs(os.path.dirname(path))
-            t = load_table(path, index_dir=self.index_dir, base_dir=self.project_dir)
+            t = load_table(path, name, index_dir=self.index_dir, base_dir=self.project_dir)
             if prefix:
                 t.name = prefix + t.name
             self._claim(t.name, "table")
             self.tables[t.name] = t
             self.log(f"loaded table {t.name}")
         elif kind == "dataset":
-            t = D.load_dataset(path, None)
+            t = D.load_dataset(path, name)
             if prefix:
                 t.name = prefix + t.name
             self._claim(t.name, "dataset")
@@ -225,13 +228,13 @@ class Session:
             self.log(f"loaded dataset {t.name}")
             self._warn_status(t)
         elif kind == "calc":
-            ent = self._calc_entity(path, None, prefix)
+            ent = self._calc_entity(path, name, prefix)
             self._claim(ent.name, "calc")
             self.calcs[ent.name] = ent
             self.log(f"loaded calc {ent.name}")
         else:
             raise GlueError(f"{path}: unknown kind {kind!r}. Use table, project, calc, or dataset")
-        self.loaded.append((path, prefix))
+        self.loaded.append((path, prefix, name))
 
     def _set_dirs(self, base):
         self.project_dir = self.project_dir or base
@@ -368,8 +371,8 @@ class Session:
         variables, session_settings = self.variables, self.settings.session
         self.__init__(trust=self.trust, log=self.log, warn_stale=self.warn_stale)
         READ_CACHE.clear()
-        for f, prefix in files:
-            self.load(f, prefix)
+        for f, prefix, name in files:
+            self.load(f, prefix, name)
         self.variables = variables
         self.settings.session = session_settings
 

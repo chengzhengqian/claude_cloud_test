@@ -125,3 +125,15 @@ def test_save_recipe_only_writes_calc(sh, proj):
     assert 'kind = "calc"' in calc and "[cache]" not in calc
     assert "calc     r" in run(sh, "ls")
     assert "r" in run(sh, "r where U=1.0 limit 2")
+
+
+def test_load_as_names_a_table_and_prefixes_a_project(sh, proj):
+    out = run(sh, "load a.toml as a2")
+    assert "loaded table a2" in out
+    assert "U" in run(sh, "info a2")
+    other = proj / "other"
+    other.mkdir()
+    (other / "project.toml").write_text((proj / "project.toml").read_text().replace('"a.toml"', '"../a.toml"')
+                                        .replace('"b.toml"', '"../b.toml"').replace('"g.toml"', '"../g.toml"'))
+    run(sh, "load other/project.toml as old")
+    assert "old_a" in sh.session.tables

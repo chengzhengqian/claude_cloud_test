@@ -1,9 +1,11 @@
 # glue core: fields, elementary operations, calculation trees
 
-Draft for version 0.2. This document defines the core calculus exactly. The
-shell language in [spec.md](spec.md) becomes a convenient surface on top of
-it: every surface expression is translated into a core tree, and the core
-tree is what gets saved.
+Version 0.2. This document defines the core calculus exactly. The shell
+language in [spec.md](spec.md) is a convenient surface on top of it: every
+surface expression is translated into a core tree, and the core tree is what
+gets saved. The code is in `glue/core/`, and the translation is in
+`glue/elaborate.py`. [changes-0.2.md](changes-0.2.md) lists what changed
+from 0.1.
 
 ## 0. Layers
 
@@ -233,7 +235,9 @@ The union of point sets that have the same inputs.
 
 Here `L : [K → lo, hi, ...]`, and `lo` and `hi` name two of its outputs.
 For each point of L, it makes n points of `input` between that point's `lo`
-and `hi` values. `scale` is `lin` or `log`. A key where `lo ≥ hi` or either
+and `hi` values. `scale` is `lin` or `log`. In TOML, n is stored as
+`count`, and a node may give `step` instead: points every `step` from `lo`,
+up to `hi`. A key where `lo ≥ hi` or either
 value is missing gives no points, and is reported.
 
 This is how grids that depend on the data are built, such as "200 points
@@ -288,7 +292,9 @@ spline method integrates the fitted interpolant.
 
 **`reduce(F, along, op, method)`** `: [K → O]`
 
-Reduces each curve to one value per output, which removes the input x.
+Reduces each curve to one value per output, which removes the input x. In
+TOML the `op` parameter is stored as `reduce = "max"`, since `op` already
+names the node's operation.
 
 | `op` | Value per curve |
 |---|---|
@@ -325,7 +331,10 @@ built from it.
 **`apply(F, along, fn, kind, params)`**
 
 Calls a Python function registered with `@glue.op`. `fn` is
-`module.function@version`, and `kind` is:
+`module:qualname@version`, as in `physops:fwhm@1`. The colon separates the
+import path from the name inside the module, so functions defined inside
+other functions or classes work too. The older form `module.function@version`
+is still read. `kind` is:
 
 | `kind` | Function | Type |
 |---|---|---|
@@ -365,9 +374,11 @@ rename(join({ lo = reduce(X, along, min, -),
        { lo.v = lo, hi.v = hi })
 ```
 
-**`overlap(A, B, along, n)`** `: [K ∪ {along} → ]` point set
+**`overlap(A, B, ..., along, n)`** `: [K ∪ {along} → ]` point set
 
-n points over the x range both A and B cover, per key.
+n points over the x range every operand covers, per key. It takes two or
+more operands. The expansion below is for two. More operands add more
+`range` terms to the join and to the `max` and `min`.
 
 ```
 R = map(join({ a = range(A, along), b = range(B, along) }, drop),
@@ -375,9 +386,10 @@ R = map(join({ a = range(A, along), b = range(B, along) }, drop),
 span(R, along, lo, hi, n, lin)
 ```
 
-**`merge_points(A, B, along)`** `: [K ∪ {along} → ]` point set
+**`merge_points(A, B, ..., along)`** `: [K ∪ {along} → ]` point set
 
-Every x point of A and B that lies inside the overlap. This is 0.1's
+Every x point of the operands that lies inside the overlap. Like `overlap`,
+it takes two or more operands. This is 0.1's
 `union()` grid.
 
 ```
@@ -386,11 +398,13 @@ select(filter(join({ g = union(points(A), points(B)), r = R }, drop),
               [along >= r.lo, along <= r.hi]), [])
 ```
 
-**`align({ a = A, b = B }, along, grid, method, extrapolate, fewpoints, unmatched)`**
+**`align({ a = A, b = B, ... }, along, grid, method, extrapolate, fewpoints, unmatched)`**
 `: [I_A ∪ I_B → a.O_A ∪ b.O_B]`
 
-Resamples A and B onto the same grid and joins them, so the result is one
-field with both sets of outputs on shared points:
+Resamples the operands onto the same grid and joins them, so the result is
+one field with all their outputs on shared points. It takes two or more
+operands. An operand without the input `along` is joined as it is, with no
+resample. For two:
 
 ```
 join({ a = resample(A, along, grid, method, extrapolate, fewpoints),
@@ -424,7 +438,7 @@ data and skip work. They never change a result.
 |---|---|---|
 | L1 | `filter` or `slice` on input u commutes with `map`, `select`, `rename`, and with every along-x operation where x ≠ u. | Reading only the files a result needs. |
 | L2 | `filter` on input u passes into each `join` operand that has u, and is dropped for operands without it. | The same, through joins. |
-| L2b | A `filter` on the new input of a `transform` whose formula uses only exact inputs and numbers can be checked against the file index: the formula is evaluated on each file's path values, without reading data. Other filters on it are applied after reading. | Reading less data when inputs are rescaled. |
+| L2b | A `filter` on the new input of a `transform` whose formula uses only exact inputs and numbers can be checked against the file index: the formula is evaluated on each file's path values, without reading data. Other filters on it are applied after reading. In 0.2 this is done for transforms in a table's `[field.transform]`, which are applied when the index is built. A `transform(...)` in an expression filters after reading. | Reading less data when inputs are rescaled. |
 | L3 | `filter` or `slice` on the input x does **not** commute with `resample`, `deriv`, `cumint`, `reduce`, or `swap` along x. | Why x ranges are applied after these. |
 | L4 | `map(map(F, f), g) = map(F, g after f)`. | Fusing pointwise steps. |
 | L5 | `join` is associative and commutative, up to output labels. | Reordering joins. |
@@ -470,10 +484,10 @@ of their input.
 and B share:
 
 - **Exact inputs** are joined as they are. An input is exact when its
-  values come from a fixed set: path coordinates, and inputs produced by
-  `axis`.
+  values come from a fixed set: path coordinates, content inputs other than
+  the axis (such as U in a SQLite table), and inputs produced by `axis`.
 - **Ragged inputs** are aligned first. An input is ragged when its values
-  vary from curve to curve: content columns like T in a file, inputs
+  vary from curve to curve: the table's axis, like T in a file, inputs
   produced by `span` or `swap`, and inputs produced by a `transform` whose
   formula uses a ragged input or an output. The translation uses
   `align({ a = A, b = B }, u, grid, method, extrapolate, fewpoints, unmatched)`,
@@ -488,16 +502,20 @@ and B share:
 | `logspace(a, b, n)` | `axis(u, log:a:b:n)` |
 | `points([...])` | `axis(u, list:[...])` |
 
-- `with align=[u, ...]` sets the aligned inputs explicitly, and
-  `align=[]` aligns nothing. `strict = true` makes it an error to align
+- `with align=[u]` sets the aligned input explicitly, and `align=[]`
+  aligns nothing, so the operands are joined on exactly equal values. An
+  input named in `align` that no operand has is an error. When more than
+  one shared input needs aligning, the statement fails and asks for
+  `align=[u]`. `strict = true` makes it an error to align
   without `with grid=...`.
 - Two operands that come from the same source with the same selection
   share their points exactly, so no alignment is inserted. That's 0.1's
   row alignment.
 
 Whether an input is exact or ragged is worked out from the tree alone, with
-no data. The rules: `source` marks path and constant inputs exact, and
-content inputs ragged. `resample` gives x the property of the grid's x.
+no data. The rules: `source` marks every input exact except its axis, which
+is ragged unless the table lists it in `[field].exact`. Path and constant
+inputs are always exact. `resample` gives x the property of the grid's x.
 `join` makes an input ragged if either operand has it ragged. `swap` makes
 the new input ragged. `transform` makes it exact only if its formula uses
 exact inputs and numbers alone. Everything else keeps the property.
@@ -588,10 +606,17 @@ still read as an alias:
 inputs = ["U", "J", "n", "T"]     # canonical inputs, in order
 outputs = ["E"]
 axis = "T"                        # default axis for surface expressions
+exact = []                        # content inputs to treat as exact (5.3)
 ```
 
 Path placeholders must be inputs. Content columns are outputs unless listed
-in `inputs`.
+in `inputs`. Without `axis`, a table with exactly one content input uses it
+as the axis. Every input except the axis is exact. The axis is ragged
+unless it's listed in `exact`, for data where every file uses the same
+points.
+
+An output's error column (`[columns.E] error = "dE"`) comes with it, so
+`outputs = ["E"]` also keeps `dE`.
 
 A table can also fix a source's conventions once, so every expression sees
 canonical names and units. These steps are applied right after reading, in
@@ -643,7 +668,7 @@ op = "source"
 table = "dmft"                   # label: which [recipe.inputs] entry to open
 def = "3f9a0c1e77b2"             # leaf id: what the table reads (section 6.5)
 duplicates = "error"
-digits = 10
+digits = { U = 10, J = 10, n = 10, T = 10 }
 name = "dmft"
 
 # ... more nodes ...
@@ -653,6 +678,8 @@ file = "dE.parquet"
 format = "parquet"
 sha256 = "..."
 points = 8800
+curves = 44
+dropped = 4
 
 [fingerprint]
 mode = "stat"
@@ -660,11 +687,14 @@ dmft = "sha256:..."
 ed = "sha256:..."
 ```
 
-A `calc` file is the same without `[cache]` and `[fingerprint]`.
+A `calc` file is the same without `[cache]` and `[fingerprint]`, and with
+`kind = "calc"`. `save NAME --recipe-only` writes one to `calcs/NAME.toml`
+and adds it to `[calcs]`.
 
 **Projects** keep views as surface text, since views are meant to follow
 the current settings. A calc file is a frozen view: a translated tree that
-no longer depends on settings.
+no longer depends on settings. `save NAME --view` writes a session
+variable's surface text to `[views]`.
 
 ```toml
 [views]
@@ -827,6 +857,23 @@ fingerprint both match. The id fixes the calculation, including every
 parameter. The fingerprint fixes the data. Names, file locations, and the
 order in which things were saved can't cause a wrong reuse.
 
+**What 0.2 implements.** The id and fingerprint rules, epochs, `invalidate`
+(all three forms), `why`, `gc`, `refresh`, and pinning work as written.
+Some parts are simpler for now:
+
+- Step 3 above, recomputing only the changed curves, is done for saved
+  datasets by `refresh`. A cached intermediate value in memory or on disk
+  is recomputed in full when its fingerprint changes.
+- The disk cache is off by default. `set disk_cache true` turns it on for
+  resample, deriv, cumint, reduce, swap, apply, align, and legendre nodes.
+  It has no size limit yet. `gc` removes entries nothing uses.
+- `invalidate NAME` for a view or calc drops the cached values of every
+  node under it, including ones other names share. They're recomputed on
+  next use, so this is only slower, never wrong. For a dataset, it marks
+  the dataset invalid, and `refresh` recomputes it in full.
+- `status --all` for intermediate nodes isn't there yet. `status` covers
+  datasets.
+
 ---
 
 ## 7. Worked example
@@ -918,19 +965,23 @@ curve along n has one point, and the surface language says so.
   writes a 0.2 file. The results don't change.
 - `[curves]` in table files is read as `[field]`: `by` and `x` become
   `inputs`, `y` becomes `outputs`, and `x` becomes `axis`.
-- The engine's current node types map onto the core: `SourceCol` is
+- The 0.1 engine's node types map onto the core: `SourceCol` is
   `select(source)`, `Binary` is `align` + `join` + `map`, `Reduce` is
-  `reduce`, `Stack` is `stack`, `At` is `eval`, and so on.
+  `reduce`, `Stack` is `stack`, `At` is `eval`, and so on. The 0.1 engine
+  and compiler are removed in 0.2.
 
 ## 9. Open questions
 
 1. **Node ids.** Content hashes make saving deterministic, and they're what
    makes identity and caching work (6.5, 6.6). The cost is that ids are
    unreadable, which the optional `name` only partly fixes.
-2. **Exact or ragged.** Is "path inputs exact, content inputs ragged" the
-   right default for your data? An input can also be declared in the table
-   file, as `exact = [...]`, when a content column is on a shared grid,
-   like β values in QMC.
+2. **Exact or ragged.** 0.2 treats every input except the axis as exact.
+   The first draft made every content input ragged, but then the U, J, n
+   columns of a SQLite table all needed aligning, and nothing worked
+   without `align=[...]`. Is "only the axis is ragged" the right default for
+   your data? The axis can be declared exact in the table file, as
+   `exact = ["T"]`, when every file uses the same points, like β values in
+   QMC.
 3. **`mean`.** It's defined as the plain average over points. An average
    weighted by spacing in x is `integral / (range)`, and could be a
    separate op, `xmean`.

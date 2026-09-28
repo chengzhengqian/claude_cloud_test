@@ -19,7 +19,7 @@ Statements:
   NAME = EXPR [with ...]      define a variable (nothing is computed yet)
   EXPR [where ...]            show values
 Commands:
-  load FILE [as PREFIX]            reload           guess DIR           new table NAME ...
+  load FILE [as NAME]              reload           guess DIR           new table NAME ...
   edit NAME        scan [NAME]     ls               info NAME           values NAME.INPUT
   show EXPR        explain STMT    del NAME         save NAME ...       export EXPR to FILE
   status [NAME]    refresh NAME|--all               pin NAME            unpin NAME
@@ -78,7 +78,8 @@ Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
            xlabel="..." ylabel="..." cmap=NAME legend=auto|off|colorbar errorbars size=(w,h)
            backend=matplotlib|gnuplot, and settings like method=cubic
   Every coordinate must be fixed by where, used in by, or used as vs.""",
-    "load": "load FILE [as PREFIX]   load a project, table, calc, or dataset file. PREFIX is added to its names",
+    "load": ("load FILE [as NAME]   load a project, table, calc, or dataset file. NAME renames a single file;\n"
+             "                      for a project it is a prefix, so `load old/project.toml as old` gives old_dmft"),
     "reload": "reload              reload all loaded files from disk",
     "guess": "guess DIR [name=NAME]   suggest a table definition for a directory tree",
     "new": 'new table NAME pattern="U_{U}/n_{n}.dat" columns=["T","E"] [root="data"] [x=T] [file=PATH]',
@@ -274,11 +275,11 @@ class Shell:
 
     def cmd_load(self, p, flags, text):
         path = self._path(p.raw_word())
-        prefix = ""
+        name = None
         if p.accept_word("as"):
-            prefix = p.expect_name("a prefix")
+            name = p.expect_name("a name")
         p.expect_end()
-        self.session.load(path, prefix)
+        self.session.load(path, name=name)
 
     def cmd_reload(self, p, flags, text):
         p.expect_end()

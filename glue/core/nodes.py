@@ -1451,6 +1451,17 @@ class LegendreNode(StdNode):
         return SwapNode({"of": H}, {"along": x, "output": s, "branches": p["branches"],
                                     "flat_tol": float(p["flat_tol"])})
 
+    def compute(self, ctx, ins, sels):
+        try:
+            return ctx.value(self.expanded, sels)
+        except GlueError as e:
+            msg = str(e)
+            if msg.startswith("swap: "):
+                y, s = self.params["output"], self.params["slope"]
+                raise GlueError(f"legendre: the slope {s} = d{y}/d{self.params['along']} must be monotonic, "
+                                f"so {y} must be convex or concave. " + msg[len("swap: "):]) from None
+            raise
+
 
 # ------------------------------------------------------------------ helpers for building trees
 
