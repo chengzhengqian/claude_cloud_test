@@ -185,6 +185,23 @@ class Node:
         """Point-set provenance: nodes with the same pid have exactly the same points."""
         return self.id
 
+    # ops whose points have, for inputs other than `along`, only values their operand has
+    KEEPS_VALUES = {"select", "filter", "map", "slice", "resample", "deriv", "cumint", "reduce", "swap",
+                    "apply", "points", "join"}
+
+    def index_values(self, names):
+        """Every combination of values `names` can take in this node, known without reading data,
+        or None. May be a superset. Used to push filters through a transform (core.md law L2b)."""
+        if self.op not in self.KEEPS_VALUES:
+            return None
+        along = self.params.get("along")
+        if along in names:
+            return None
+        for _, c in self.children():
+            if all(c.type.has_input(n) for n in names):
+                return c.index_values(names)
+        return None
+
     # --- evaluation
 
     def compute(self, ctx, ins, sels):
@@ -296,6 +313,13 @@ class SourceNode(Node):
 
     def compute(self, ctx, ins, sels):
         return self.table.read_points(sels, self.params["duplicates"], ctx)
+
+    def index_values(self, names):
+        t = self.table
+        if not hasattr(t, "path_inputs") or not set(names) <= set(t.path_inputs):
+            return None
+        rows = [{n: dict(t.constants, **ch.coords).get(n) for n in names} for ch in t.index()]
+        return pd.DataFrame(rows, columns=list(names)).drop_duplicates()
 
     def toml_labels(self):
         return {"table": self.table.name}
@@ -447,6 +471,11 @@ class RenameNode(Node):
     def compute(self, ctx, ins, sels):
         return _order(ins[("of",)].rename(columns=self.params["mapping"]), self.type)
 
+    def index_values(self, names):
+        inv = {v: k for k, v in self.params["mapping"].items()}
+        vals = self.kid().index_values([inv.get(n, n) for n in names])
+        return None if vals is None else vals.set_axis(list(names), axis=1)
+
 
 @register
 class TransformNode(Node):
@@ -473,8 +502,54 @@ class TransformNode(Node):
     def blocked(self):
         return {self.params["to"]}
 
+    @cached_property
+    def deps(self):
+        return F.names(F.parse(self.params["formula"]))
+
+    @cached_property
+    def part(self):
+        # a filter on the new input is applied here, after computing it. It can also be
+        # checked against the operand's index when the formula only uses exact inputs (L2b).
+        out = set(super().part)
+        t = self.kid().type
+        if self.type.var(self.params["to"]).exact and all(t.has_input(d) for d in self.deps):
+            out.add(self.params["to"])
+        return frozenset(out)
+
+    def child_sels(self, sels):
+        to = self.params["to"]
+        rest = [p for p in sels if p.name != to]
+        out = super().child_sels(rest)
+        mine = [p for p in sels if p.name == to and p.literal]
+        if not mine:
+            return out
+        deps = sorted(self.deps)
+        vals = self.kid().index_values(deps)
+        if vals is None or not len(vals):
+            return out
+        v = vals.copy()
+        new = "__glue_new__"                     # `to` may have the same name as an input
+        v[new] = rnd(F.evaluate(F.parse(self.params["formula"]), v))
+        keep = F.apply_preds([Pred(new, p.op, p.value, p.lo, p.hi) for p in mine], v)
+        c = self.kid()
+        for d in deps:
+            if d not in c.part:
+                continue
+            allowed = sorted(set(keep[d].tolist()))
+            if not allowed:
+                allowed = [float("nan")]         # nothing matches: read nothing
+            out[("of",)].append(Pred(d, "=", tuple(allowed)))
+        return out
+
+    def index_values(self, names):
+        if self.params["to"] in names:
+            return None
+        return self.kid().index_values(names)
+
     def compute(self, ctx, ins, sels):
         f = ins[("of",)].copy()
+        if not len(f):
+            return pd.DataFrame({c: pd.Series(dtype=float) for c in self.type.input_names + self.type.output_names})
         new = rnd(F.evaluate(F.parse(self.params["formula"]), f))
         src, to = self.params["input"], self.params["to"]
         f = f.drop(columns=[src])
@@ -1254,6 +1329,9 @@ class StdNode(Node):
 
     def child_sels(self, sels):
         return {}
+
+    def index_values(self, names):
+        return self.expanded.index_values(names)
 
     def compute(self, ctx, ins, sels):
         return ctx.value(self.expanded, sels)

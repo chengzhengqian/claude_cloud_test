@@ -98,6 +98,8 @@ def match_selector(sel, value, ctype="float", digits=10):
     target = sel.value
     if ctype != "str" and isinstance(target, str):
         raise GlueError(f"{sel.name} is a number, but the selector compares it with the string {target!r}")
+    if isinstance(target, tuple):
+        target = list(target)
     if ctype == "str" and not isinstance(target, (str, list)):
         target = str(target)
 

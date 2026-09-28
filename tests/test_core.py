@@ -368,3 +368,28 @@ def test_disk_cache_size_limit(proj):
     s.store.clear()
     frame(s, "d(b.E, T)")
     assert os.listdir(cache) == []
+
+
+def _reads(s, expr, where):
+    r = s.eval(expr, where=where)
+    return [l.strip() for l in s.explain(r.node, r.comp, lang.parse_where_text(where)) if " read " in l]
+
+
+@pytest.mark.parametrize("expr, where, reads, U", [
+    ("transform(a.E, U, u = U * 10)", "u=20", "a: read 2 of 4 files", [20.0]),
+    ("transform(a.E, U, U = U * 10)", "U=10", "a: read 2 of 4 files", [10.0]),
+    ("transform(a.E - b.E, U, u = U * 10)", "u=10, n=0.5", "a: read 1 of 4 files", [10.0]),
+    ("transform(a.E, U, u = U * 10)", "u=7", "a: read 0 of 4 files", []),
+])
+def test_filter_on_transformed_input_skips_files(proj, expr, where, reads, U):
+    s = quiet(proj / "project.toml")
+    assert reads in _reads(s, expr, where)
+    df = frame(s, expr, where=where)
+    name = s.eval(expr).type.input_names[0]
+    assert sorted(set(df[name])) == U
+    # the same rows as filtering after computing everything
+    full = frame(s, expr)
+    from glue.core.formula import apply_preds, pred_from_selector
+    expect = apply_preds([pred_from_selector(x) for x in lang.parse_where_text(where)], full)
+    assert len(df) == len(expect)
+    np.testing.assert_allclose(np.sort(df.iloc[:, -1]), np.sort(expect.iloc[:, -1]))
