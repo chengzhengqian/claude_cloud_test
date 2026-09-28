@@ -72,6 +72,17 @@ def test_stale_and_incremental_refresh(proj):
     np.testing.assert_allclose(saved["dE"].to_numpy(), fresh["value"].to_numpy())
 
 
+def test_refresh_counts_result_curves_not_changed_files(proj):
+    # a has 4 files, but dE only has 3 curves because b lacks (U=2, n=1)
+    s = quiet(proj / "project.toml")
+    s.save("dE")
+    later = time.time() + 10
+    for p in (proj / "data" / "a").rglob("*.dat"):
+        os.utime(p, (later, later))
+    lines = s.refresh("dE")
+    assert "recomputed 3 of 3 curves, 0 unchanged" in lines[0]
+
+
 def test_new_input_file_adds_curve(proj):
     s = quiet(proj / "project.toml")
     s.save("dE")

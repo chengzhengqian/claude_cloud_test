@@ -1,6 +1,6 @@
-glue = "0.1"
+glue = "0.2"
 kind = "table"
-description = "Excitation gap, one value per run. No x column, so this is a keyed table."
+description = "Excitation gap, one value per run. No axis, so every input is exact and this is a keyed table."
 
 [source]
 locator = "glob"
@@ -10,6 +10,10 @@ pattern = "U_{U}/J_{J}/n_{n}.dat"
 [source.reader]
 format = "text"
 columns = ["gap"]
+
+[field]
+inputs = ["U", "J", "n"]
+outputs = ["gap"]
 
 [columns.gap]
 unit = "t"

@@ -17,7 +17,7 @@ from .core.context import Context
 from .core.formula import Pred, apply_preds, pred_from_selector, predicate_text
 from .core.store import Store, find_glue_dir, load_epochs, salts
 from .core.tree import dump_nodes, load_nodes
-from .core.types import FType, Out, Var
+from .core.types import FType, Out, Var, curve_key
 from .elaborate import Elaborator, Entity
 from .errors import GlueError
 from .settings import Settings, convert
@@ -615,7 +615,9 @@ def refresh(info, full=False, force=False, index_dir=None, log=print, _done=None
             new_frames.append(ctx.run(root, preds))
         frame = pd.concat([old[~drop]] + new_frames, ignore_index=True)
         _write(info, root, frame, ns.entities, glue_dir)
-        k = len(sets)
+        fresh = pd.concat(new_frames, ignore_index=True) if new_frames else pd.DataFrame()
+        keys = [c for c in curve_key(root.type) if c in fresh.columns]
+        k = len(fresh.drop_duplicates(keys)) if keys and len(fresh) else min(len(fresh), 1)
         log(f"{info.name}: recomputed {k} of {info.curves} {_unit_word(root)}, {max(info.curves - k, 0)} unchanged")
     for line in ctx.report.lines():
         log("  " + line)

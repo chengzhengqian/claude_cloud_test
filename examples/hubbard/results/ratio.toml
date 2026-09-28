@@ -1,42 +1,74 @@
-glue = "0.1"
+glue = "0.2"
 kind = "dataset"
 name = "ratio"
-created = 2026-09-27T19:18:42Z
-tool = "glue 0.1.0"
+created = 2026-09-28T00:17:19Z
+tool = "glue 0.2.0"
 pinned = false
 description = ""
 
+[type]
+inputs = ["U", "J", "n"]
+outputs = ["ratio"]
+exact = ["U", "J", "n"]
+
 [recipe]
-expr = "Tpeak / gap.gap"
-source_expr = "Tpeak / gap.gap"
-where = ""
+lib = "glue-core 1"
+surface = "Tpeak / gap.gap"
+root = "8e6c0f5595e5"
 
 [recipe.inputs]
 Tpeak = "Tpeak.toml"
 gap = "../tables/gap.toml"
 
-[recipe.settings]
-method = "pchip"
-grid = "overlap(n=200)"
-extrapolate = "nan"
-duplicates = "mean"
-fewpoints = "linear"
-unmatched = "drop"
-nan_rows = "drop"
+[recipe.nodes.8939286b0804]
+op = "dataset"
+root = "8939286b0804"
+dataset = "Tpeak"
+name = "Tpeak"
 
-[curves]
-by = ["U", "J", "n"]
-y = ["ratio"]
+[recipe.nodes.c238de76de16]
+op = "source"
+def = "d8f00be1e2e4"
+duplicates = "mean"
+digits = { U = 10, J = 10, n = 10 }
+table = "gap"
+name = "gap"
+
+[recipe.nodes.ee49efb3bba9]
+op = "select"
+of = "c238de76de16"
+outputs = ["gap"]
+name = "gap.gap"
+
+[recipe.nodes.03b101e74f7a]
+op = "join"
+of = { a = "8939286b0804", b = "ee49efb3bba9" }
+unmatched = "drop"
+name = "Tpeak / gap.gap"
+
+[recipe.nodes.1ee30d4b216c]
+op = "map"
+of = "03b101e74f7a"
+outputs = { value = "a.Tpeak / b.gap" }
+keep = false
+units = { value = "" }
+name = "Tpeak / gap.gap"
+
+[recipe.nodes.8e6c0f5595e5]
+op = "rename"
+of = "1ee30d4b216c"
+mapping = { value = "ratio" }
+name = "ratio"
 
 [cache]
 file = "ratio.parquet"
 format = "parquet"
-sha256 = "c9679574b57aec7ab49c16ea2b24855b8730e9c78be796218f5644dcd5a89025"
-rows = 48
+sha256 = "f15d41eb41d82d74dd7826c64e18d3a99df3e6fb84955e8ea67b18c2c3998f37"
+points = 48
 curves = 48
 dropped = 0
 
 [fingerprint]
-mode = "stat"
-Tpeak = "sha256:d37e41cdbf6fa765"
-gap = "sha256:2540771a301eadb0"
+mode = "hash"
+Tpeak = "sha256:ebe2bef5fb8c8fb7"
+gap = "sha256:6e34d36d8274b673"

@@ -1,40 +1,87 @@
-glue = "0.1"
+glue = "0.2"
 kind = "dataset"
 name = "Tpeak"
-created = 2026-09-27T19:18:42Z
-tool = "glue 0.1.0"
+created = 2026-09-28T00:17:19Z
+tool = "glue 0.2.0"
 pinned = false
 description = ""
 
+[type]
+inputs = ["U", "J", "n"]
+outputs = ["Tpeak"]
+exact = ["U", "J", "n"]
+
 [recipe]
-expr = "argmax(d(dmft.E, T))"
-source_expr = "argmax(C)"
-where = ""
+lib = "glue-core 1"
+surface = "argmax(C)"
+root = "8939286b0804"
 
 [recipe.inputs]
 dmft = "../tables/dmft.toml"
 
-[recipe.settings]
-method = "pchip"
-grid = "overlap(n=200)"
-extrapolate = "nan"
+[recipe.nodes.fafeac3f54c2]
+op = "source"
+def = "8bb4786c839b"
 duplicates = "mean"
-fewpoints = "linear"
-unmatched = "drop"
-nan_rows = "drop"
+digits = { U = 10, J = 10, n = 10, T = 10 }
+table = "dmft"
+name = "dmft"
 
-[curves]
-by = ["U", "J", "n"]
-y = ["Tpeak"]
+[recipe.nodes.804fda7cc31d]
+op = "select"
+of = "fafeac3f54c2"
+outputs = ["E"]
+name = "dmft.E"
+
+[recipe.nodes.02455766edb9]
+op = "deriv"
+of = "804fda7cc31d"
+along = "T"
+order = 1
+method = "pchip"
+fewpoints = "linear"
+
+[recipe.nodes.0a4093550e2c]
+op = "rename"
+of = "02455766edb9"
+mapping = { E = "value" }
+name = "d(dmft.E, T)"
+
+[recipe.nodes.1f4d5aea31d9]
+op = "map"
+of = "0a4093550e2c"
+outputs = { C = "value" }
+keep = false
+units = { C = "1" }
+name = "C"
+
+[recipe.nodes.0ff8e2216271]
+op = "reduce"
+of = "1f4d5aea31d9"
+along = "T"
+reduce = "argmax"
+method = "-"
+
+[recipe.nodes.b3f782a865e7]
+op = "rename"
+of = "0ff8e2216271"
+mapping = { C = "value" }
+name = "argmax(C)"
+
+[recipe.nodes.8939286b0804]
+op = "rename"
+of = "b3f782a865e7"
+mapping = { value = "Tpeak" }
+name = "Tpeak"
 
 [cache]
 file = "Tpeak.parquet"
 format = "parquet"
-sha256 = "d37e41cdbf6fa765c1752d5e7619f1494b684bad79074d190b6124c07bc1d748"
-rows = 48
+sha256 = "ebe2bef5fb8c8fb782a8a82c8833864858576b597a3fe84cc89b834d5339ce74"
+points = 48
 curves = 48
 dropped = 0
 
 [fingerprint]
-mode = "stat"
-dmft = "sha256:119a06fbe6b8846a"
+mode = "hash"
+dmft = "sha256:4ec601f4fe72a8c6"

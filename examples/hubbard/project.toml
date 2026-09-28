@@ -1,4 +1,4 @@
-glue = "0.1"
+glue = "0.2"
 kind = "project"
 name = "hubbard"
 description = "Energy and specific heat of a Hubbard-like model from DMFT, ED, and QMC"
@@ -16,6 +16,8 @@ C  = { expr = "d(dmft.E, T)", description = "specific heat per site", unit = "1"
 [settings]
 method = "pchip"
 grid = "overlap(n=200)"
+# Compare file contents, not modification times. A git clone resets the times.
+fingerprint = "hash"
 
 [plot]
 cmap = "viridis"

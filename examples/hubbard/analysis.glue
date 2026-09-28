@@ -59,7 +59,25 @@ plot qmc=qmc.E, dmft=dmft.E where U=4.0, J=0.1, n=1.0, T=:0.55 with errorbars > 
 dQ = qmc.E - dmft.E with grid=like(qmc.E)
 plot dQ by U where J=0.1, n=1.0 with style=linespoints > figs/11_qmc_minus_dmft.png
 
-# --- 5. Save results as datasets -------------------------------------------
+# --- 5. Change variables ---------------------------------------------------
+
+# Scaling collapse. Measure T in units of the gap, then C should fall on one
+# curve for every U. transform renames and rescales an input. The formula may
+# use other fields. gap has one value per curve, so each curve gets its own scale.
+Cs = transform(C, T, t = T / gap.gap)
+plot Cs by U where J=0.1, n=1.0 > figs/13_scaling_collapse.png
+
+# The average over fillings. mean() needs the curves on one grid first.
+En = mean(resample(dmft.E, grid=linspace(0.05, 1.0, 100)), n)
+plot En by U where J=0.1 > figs/14_mean_over_n.png
+
+# Swap an input and an output. E rises with T, so T(E) is a function too.
+# Below T=0.1 the curves are flat to within noise, and swap stops there with an
+# error, so keep only the part where E clearly rises.
+TE = swap(dmft.E[T=0.1:], T)
+plot TE by U where J=0.1, n=1.0 > figs/15_T_of_E.png
+
+# --- 6. Save results as datasets -------------------------------------------
 
 save dE as results/dE_fine grid=overlap(n=400)
 save Tpeak
@@ -67,6 +85,9 @@ save ratio
 C_log = resample(C, grid=logspace(0.01, 1.0, 300))
 save C_log
 status
+
+# Why a dataset is fresh or stale, and what it reads.
+why Tpeak
 
 # Saved datasets are tables too. Tpeak is now read from its cache file.
 plot Tpeak vs J by U where n=0.9 > figs/12_saved_peak_vs_J.png

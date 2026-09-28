@@ -1,45 +1,92 @@
-glue = "0.1"
+glue = "0.2"
 kind = "dataset"
 name = "C_log"
-created = 2026-09-27T19:18:42Z
-tool = "glue 0.1.0"
+created = 2026-09-28T00:17:19Z
+tool = "glue 0.2.0"
 pinned = false
 description = ""
 
+[type]
+inputs = ["U", "J", "n", "T"]
+outputs = ["C_log"]
+exact = ["U", "J", "n", "T"]
+axis = "T"
+units = { T = "t", C_log = "1" }
+
 [recipe]
-expr = "resample(d(dmft.E, T), grid=logspace(0.01, 1.0, 300))"
-source_expr = "resample(C, grid=logspace(0.01, 1.0, 300))"
-where = ""
+lib = "glue-core 1"
+surface = "resample(C, grid=logspace(0.01, 1.0, 300))"
+root = "bfd85de83910"
 
 [recipe.inputs]
 dmft = "../tables/dmft.toml"
 
-[recipe.settings]
-method = "pchip"
-grid = "overlap(n=200)"
-extrapolate = "nan"
+[recipe.nodes.fafeac3f54c2]
+op = "source"
+def = "8bb4786c839b"
 duplicates = "mean"
+digits = { U = 10, J = 10, n = 10, T = 10 }
+table = "dmft"
+name = "dmft"
+
+[recipe.nodes.804fda7cc31d]
+op = "select"
+of = "fafeac3f54c2"
+outputs = ["E"]
+name = "dmft.E"
+
+[recipe.nodes.02455766edb9]
+op = "deriv"
+of = "804fda7cc31d"
+along = "T"
+order = 1
+method = "pchip"
 fewpoints = "linear"
-unmatched = "drop"
-nan_rows = "drop"
 
-[curves]
-by = ["U", "J", "n"]
-x = "T"
-y = ["C_log"]
+[recipe.nodes.0a4093550e2c]
+op = "rename"
+of = "02455766edb9"
+mapping = { E = "value" }
+name = "d(dmft.E, T)"
 
-[columns.T]
-unit = "t"
-label = "temperature"
+[recipe.nodes.1f4d5aea31d9]
+op = "map"
+of = "0a4093550e2c"
+outputs = { C = "value" }
+keep = false
+units = { C = "1" }
+name = "C"
+
+[recipe.nodes.faa25821abf4]
+op = "axis"
+input = "T"
+values = "log:0.01:1.0:300"
+name = "logspace(0.01, 1.0, 300)"
+
+[recipe.nodes.0cb0bb324486]
+op = "resample"
+of = "1f4d5aea31d9"
+grid = "faa25821abf4"
+along = "T"
+method = "pchip"
+extrapolate = "nan"
+fewpoints = "linear"
+name = "resample(C, grid=logspace(0.01, 1.0, 300))"
+
+[recipe.nodes.bfd85de83910]
+op = "rename"
+of = "0cb0bb324486"
+mapping = { C = "C_log" }
+name = "C_log"
 
 [cache]
 file = "C_log.parquet"
 format = "parquet"
-sha256 = "ad40621c817a3411b496c0688654a3e42fb908e5addebf62ad3451ea7347f250"
-rows = 14400
+sha256 = "1556f103f9fa9dfabba84b77dc9b593a7abafcdbb223e189785a4c51582e28da"
+points = 14400
 curves = 48
 dropped = 0
 
 [fingerprint]
-mode = "stat"
-dmft = "sha256:119a06fbe6b8846a"
+mode = "hash"
+dmft = "sha256:4ec601f4fe72a8c6"

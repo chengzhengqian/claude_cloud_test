@@ -342,7 +342,13 @@ class SourceTable:
 
     def output_names(self):
         if self.outputs_decl is not None:
-            return list(self.outputs_decl)
+            # an output's error column comes along with it
+            outs = list(self.outputs_decl)
+            for c in list(outs):
+                e = self.m(c).error if c in self.meta else None
+                if e and e not in outs:
+                    outs.append(e)
+            return outs
         from .core import formula as F
 
         consumed = {t["from"] for t in self.transforms}

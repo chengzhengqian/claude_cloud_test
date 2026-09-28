@@ -1,50 +1,98 @@
-glue = "0.1"
+glue = "0.2"
 kind = "dataset"
 name = "dE_fine"
-created = 2026-09-27T19:18:42Z
-tool = "glue 0.1.0"
+created = 2026-09-28T00:17:19Z
+tool = "glue 0.2.0"
 pinned = false
 description = ""
 
+[type]
+inputs = ["U", "J", "n", "T"]
+outputs = ["dE_fine"]
+exact = ["U", "J", "n"]
+axis = "T"
+units = { T = "t", dE_fine = "t" }
+
 [recipe]
-expr = "dmft.E - ed.E"
-source_expr = "dE"
-where = ""
+lib = "glue-core 1"
+surface = "dE"
+root = "ac64b53bc335"
 
 [recipe.inputs]
 dmft = "../tables/dmft.toml"
 ed = "../tables/ed.toml"
 
-[recipe.settings]
-method = "pchip"
-grid = "overlap(n=400)"
-extrapolate = "nan"
+[recipe.nodes.fafeac3f54c2]
+op = "source"
+def = "8bb4786c839b"
 duplicates = "mean"
+digits = { U = 10, J = 10, n = 10, T = 10 }
+table = "dmft"
+name = "dmft"
+
+[recipe.nodes.804fda7cc31d]
+op = "select"
+of = "fafeac3f54c2"
+outputs = ["E"]
+name = "dmft.E"
+
+[recipe.nodes.d4c7f137535c]
+op = "source"
+def = "ebffd7c461f4"
+duplicates = "mean"
+digits = { U = 10, J = 10, n = 10, T = 10 }
+table = "ed"
+name = "ed"
+
+[recipe.nodes.4d0324373f05]
+op = "select"
+of = "d4c7f137535c"
+outputs = ["E"]
+name = "ed.E"
+
+[recipe.nodes.404c232151d7]
+op = "overlap"
+of = { a = "804fda7cc31d", b = "4d0324373f05" }
+along = "T"
+count = 400
+step = 0.0
+unmatched = "drop"
+name = "overlap(n=400)"
+
+[recipe.nodes.a60dbe1c9005]
+op = "align"
+of = { a = "804fda7cc31d", b = "4d0324373f05" }
+grid = "404c232151d7"
+along = "T"
+method = "pchip"
+extrapolate = "nan"
 fewpoints = "linear"
 unmatched = "drop"
-nan_rows = "drop"
+name = "dmft.E - ed.E"
 
-[curves]
-by = ["U", "J", "n"]
-x = "T"
-y = ["dE_fine"]
+[recipe.nodes.1f830ba4216c]
+op = "map"
+of = "a60dbe1c9005"
+outputs = { value = "a.E - b.E" }
+keep = false
+units = { value = "t" }
+name = "dmft.E - ed.E"
 
-[columns.T]
-unit = "t"
-label = "temperature"
-
-[columns.dE_fine]
-unit = "t"
+[recipe.nodes.ac64b53bc335]
+op = "rename"
+of = "1f830ba4216c"
+mapping = { value = "dE_fine" }
+name = "dE_fine"
 
 [cache]
 file = "dE_fine.parquet"
 format = "parquet"
-sha256 = "20be5cd7d0ececdf2111ba1a2d23c99bdbb378a9c7de8f6d2298c88a2bc88833"
-rows = 17600
+sha256 = "56c0bcef96fa129c600ab24d4e9ba3c52d176a3dc2a76b3365774168c39d403e"
+points = 17600
 curves = 44
 dropped = 0
 
 [fingerprint]
-mode = "stat"
-dmft = "sha256:119a06fbe6b8846a"
-ed = "sha256:5a8e04d740741022"
+mode = "hash"
+dmft = "sha256:4ec601f4fe72a8c6"
+ed = "sha256:e5e5084fc4516536"

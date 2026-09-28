@@ -3,31 +3,41 @@ loaded project hubbard: 4 tables, 2 views, 0 datasets
 > info dmft
   table dmft: data/dmft/U_{U}/J_{J}/n_{n}.dat
     DMFT energy per site vs temperature
+    type       [U, J, n, T:ragged → E]
     48 files
     48 curves
-    coordinate U          4 values: 1.0, 2.0, 3.0, 4.0  (path)
-    coordinate J          4 values: 0.0, 0.1, 0.2, 0.3  (path)
-    coordinate n          3 values: 0.8, 0.9, 1.0  (path)
-    x          T [t]
-    value      E [t]
+    input      U          4 values: 1.0, 2.0, 3.0, 4.0  (path)
+    input      J          4 values: 0.0, 0.1, 0.2, 0.3  (path)
+    input      n          3 values: 0.8, 0.9, 1.0  (path)
+    axis       T [t]
+    output     E [t]
 > plot dmft.E by J where U=2.0, n=1.0 with logx > figs/01_dmft_energy.png
   saved figs/01_dmft_energy.png
 > plot dmft=dmft.E, ed=ed.E by U where J=0.1, n=1.0 > figs/02_dmft_vs_ed.png
   saved figs/02_dmft_vs_ed.png
 > explain plot dE by U where J=0.1, n=1.0
-  dE = dmft.E - ed.E
-    align dmft.E and ed.E: grid overlap(n=200), method pchip
-    dmft: read 4 of 48 files, columns E, T
-    ed: read 4 of 44 files, columns E, T
-    result: 4 curves on (U, J, n)
+  dE = rename(mapping={value: dE})  [U, J, n, T:ragged → dE]
+    dmft.E - ed.E = map(value = a.E - b.E)  [U, J, n, T:ragged → value]
+      dmft.E - ed.E = align(along T, grid overlap(n=200), method pchip)  [U, J, n, T:ragged → a.E, b.E]
+        dmft.E = select(outputs=[E])  [U, J, n, T:ragged → E]
+          source(dmft, duplicates=error)  [U, J, n, T:ragged → E]
+        ed.E = select(outputs=[E])  [U, J, n, T:ragged → E]
+          source(ed, duplicates=error)  [U, J, n, T:ragged → E]
+        overlap(n=200) = overlap(along=T, count=200, step=0, unmatched=drop)  [U, J, n, T:ragged → ]
+          dmft.E = select(outputs=[E])  [U, J, n, T:ragged → E]  (same as above: 399deed7889d)
+          ed.E = select(outputs=[E])  [U, J, n, T:ragged → E]  (same as above: 5119f737cbc5)
+    filters pushed to the sources: J=0.1, n=1.0
+    dmft: read 4 of 48 files
+    ed: read 4 of 44 files
+    result: [U, J, n, T:ragged → dE]
 > plot dE by U where J=0.1, n=1.0 > figs/03_dmft_minus_ed.png
   aligned dmft.E, ed.E: 4 curves matched on (U, J, n), grid overlap(n=200), method pchip
   saved figs/03_dmft_minus_ed.png
 > set duplicates mean
 > rel = (dmft.E - ed.E) / gap.gap with grid=overlap(n=400)
 > plot rel by U where J=0.1, n=0.9 > figs/04_difference_over_gap.png
-  aligned dmft.E, ed.E: 4 curves matched on (U, J, n), grid overlap(n=400), method pchip
   curves with repeated T (mean): 1
+  aligned dmft.E, ed.E: 4 curves matched on (U, J, n), grid overlap(n=400), method pchip
   saved figs/04_difference_over_gap.png
 > plot C by J where U=2.0, n=1.0 with logx > figs/05_specific_heat.png
   saved figs/05_specific_heat.png
@@ -49,10 +59,20 @@ loaded project hubbard: 4 tables, 2 views, 0 datasets
 > plot dQ by U where J=0.1, n=1.0 with style=linespoints > figs/11_qmc_minus_dmft.png
   aligned qmc.E, dmft.E: 4 curves matched on (U, J, n), grid like(qmc.E), method pchip
   saved figs/11_qmc_minus_dmft.png
+> Cs = transform(C, T, t = T / gap.gap)
+> plot Cs by U where J=0.1, n=1.0 > figs/13_scaling_collapse.png
+  saved figs/13_scaling_collapse.png
+> En = mean(resample(dmft.E, grid=linspace(0.05, 1.0, 100)), n)
+> plot En by U where J=0.1 > figs/14_mean_over_n.png
+  resampled dmft.E: 12 curves, grid linspace(0.05, 1.0, 100), method pchip
+  saved figs/14_mean_over_n.png
+> TE = swap(dmft.E[T=0.1:], T)
+> plot TE by U where J=0.1, n=1.0 > figs/15_T_of_E.png
+  saved figs/15_T_of_E.png
 > save dE as results/dE_fine grid=overlap(n=400)
+  curves with repeated T (mean): 1
   dropped 4 unmatched keys (only in dmft.E)
   aligned dmft.E, ed.E: 44 curves matched on (U, J, n), grid overlap(n=400), method pchip
-  curves with repeated T (mean): 1
   wrote results/dE_fine.toml and results/dE_fine.parquet (44 curves, 17600 rows)
 > save Tpeak
   wrote results/Tpeak.toml and results/Tpeak.parquet (48 curves, 48 rows)
@@ -62,7 +82,7 @@ loaded project hubbard: 4 tables, 2 views, 0 datasets
   dataset ratio replaces the variable of the same name
 > C_log = resample(C, grid=logspace(0.01, 1.0, 300))
 > save C_log
-  resampled d(dmft.E, T): 48 curves, grid logspace(0.01, 1.0, 300), method pchip
+  resampled C: 48 curves, grid logspace(0.01, 1.0, 300), method pchip
   wrote results/C_log.toml and results/C_log.parquet (48 curves, 14400 rows)
   dataset C_log replaces the variable of the same name
 > status
@@ -70,6 +90,17 @@ loaded project hubbard: 4 tables, 2 views, 0 datasets
   Tpeak          fresh      
   ratio          fresh      
   C_log          fresh      
+> why Tpeak
+  dataset Tpeak: fresh
+    Tpeak = rename(mapping={value: Tpeak})  [U, J, n → Tpeak]
+      argmax(C) = rename(mapping={C: value})  [U, J, n → value]
+        reduce(along=T, reduce=argmax, method=-)  [U, J, n → C]
+          C = map(C = value)  [U, J, n, T:ragged → C]
+            d(dmft.E, T) = rename(mapping={E: value})  [U, J, n, T:ragged → value]
+              deriv(along=T, order=1, method=pchip, fewpoints=linear)  [U, J, n, T:ragged → E]
+                dmft.E = select(outputs=[E])  [U, J, n, T:ragged → E]
+                  source(dmft, duplicates=mean)  [U, J, n, T:ragged → E]
+    leaf dmft: 48 files, fingerprint sha256:4ec601f4fe72a8c6
 > plot Tpeak vs J by U where n=0.9 > figs/12_saved_peak_vs_J.png
   saved figs/12_saved_peak_vs_J.png
 > export dE_fine to exports/dE_fine.csv where J=0.1

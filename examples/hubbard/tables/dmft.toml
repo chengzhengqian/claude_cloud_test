@@ -1,4 +1,4 @@
-glue = "0.1"
+glue = "0.2"
 kind = "table"
 description = "DMFT energy per site vs temperature"
 
@@ -11,8 +11,10 @@ pattern = "U_{U}/J_{J}/n_{n}.dat"
 format = "text"
 columns = ["T", "E"]
 
-[curves]
-x = "T"
+[field]
+inputs = ["U", "J", "n", "T"]
+outputs = ["E"]
+axis = "T"
 
 [columns.T]
 unit = "t"
