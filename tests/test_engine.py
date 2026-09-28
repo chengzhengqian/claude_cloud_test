@@ -51,9 +51,11 @@ def test_keyed_broadcast_and_coordinates(session):
     np.testing.assert_allclose(df["value"], df["T"], rtol=1e-6)
 
 
-def test_free_x_needs_a_curve(session):
-    with pytest.raises(GlueError, match="only an x name"):
-        frame(session, "T * a.U")
+def test_bare_input_needs_a_field(session):
+    with pytest.raises(GlueError, match="no field to take it from"):
+        frame(session, "T * 2")
+    df = frame(session, "T * a.U", where="U=2.0, n=0.5")
+    np.testing.assert_allclose(df["value"], df["T"] * 2.0)
 
 
 def test_reductions_and_at(session):
@@ -120,8 +122,10 @@ def test_selection_and_where(session):
     assert df["T"].between(0.2, 0.4).all()
     df = frame(session, "a.E[n!=0.5]")
     assert set(df["n"]) == {1.0}
-    with pytest.raises(GlueError, match="no coordinate J"):
+    with pytest.raises(GlueError, match="no input J"):
         frame(session, "a.E", where="J=0.1")
+    df = frame(session, "a.E[E<0]", where="U=2.0")
+    assert (df["E"] < 0).all() and len(df) > 0
 
 
 def test_where_pushdown_reads_fewer_files(session):
@@ -161,8 +165,8 @@ def test_name_errors(session):
         frame(session, "aa.E")
     with pytest.raises(GlueError, match="has no column"):
         frame(session, "a.X")
-    with pytest.raises(GlueError, match="Pick a column"):
-        frame(session, "a - b.E")
+    same = frame(session, "a - b.E")
+    np.testing.assert_allclose(same["value"], frame(session, "a.E - b.E")["value"])
 
 
 def test_python_operators(session):

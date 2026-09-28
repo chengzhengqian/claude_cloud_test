@@ -8,7 +8,7 @@ from .errors import ParseError
 COMMANDS = {
     "load", "reload", "guess", "new", "edit", "scan", "ls", "info", "values", "show",
     "explain", "del", "save", "export", "status", "refresh", "pin", "unpin", "plot",
-    "set", "unset", "run", "py", "help", "quit",
+    "set", "unset", "run", "py", "help", "quit", "invalidate", "why", "gc",
 }
 KEYWORDS = {"with", "where", "vs", "by", "to", "as"}
 RESERVED = COMMANDS | KEYWORDS
@@ -457,7 +457,7 @@ class Parser:
                 if tok.kind == "NAME" and self._name_then_eq():
                     name = self.next().value
                     self.expect_op("=")
-                    kwargs.append((name, self.parse_optvalue()))
+                    kwargs.append((name, self.parse_expr()))
                 else:
                     if kwargs:
                         self.error("positional argument after keyword argument")

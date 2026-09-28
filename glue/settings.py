@@ -168,6 +168,39 @@ def _intval(node):
     raise GlueError("must be a whole number")
 
 
+def _align(node):
+    if isinstance(node, (list, tuple)):
+        return tuple(str(x) for x in node) if node != "auto" else "auto"
+    if isinstance(node, str):
+        if node == "auto":
+            return "auto"
+        node = lang.parse_optvalue_text(node)
+    if isinstance(node, lang.Name) and node.id == "auto":
+        return "auto"
+    if isinstance(node, lang.ListLit):
+        out = []
+        for i in node.items:
+            if not isinstance(i, lang.Name):
+                raise GlueError("align takes a list of input names, as in align=[T]")
+            out.append(i.id)
+        return tuple(out)
+    raise GlueError("align must be auto or a list of input names, as in align=[T]")
+
+
+def _align_text(v):
+    return "auto" if v == "auto" else "[" + ", ".join(v) + "]"
+
+
+def _float(node):
+    if isinstance(node, (int, float)) and not isinstance(node, bool):
+        return float(node)
+    if isinstance(node, lang.Num):
+        return float(node.value)
+    if isinstance(node, str):
+        return float(node)
+    raise GlueError("must be a number")
+
+
 def _string(node):
     if isinstance(node, str):
         return node
@@ -187,6 +220,10 @@ SETTINGS = {
     "fewpoints": (_choice(["linear", "drop", "error"]), "linear", str),
     "unmatched": (_choice(["drop", "error"]), "drop", str),
     "nan_rows": (_choice(["drop", "error"]), "drop", str),
+    "align": (_align, "auto", _align_text),
+    "branches": (_choice(["error", "split"]), "error", str),
+    "flat_tol": (_float, 1e-9, repr),
+    "disk_cache": (_bool, False, lambda v: "true" if v else "false"),
     "strict": (_bool, False, lambda v: "true" if v else "false"),
     "report": (_choice(["short", "full", "off"]), "short", str),
     "fingerprint": (_choice(["stat", "hash"]), "stat", str),
@@ -215,8 +252,10 @@ def convert(key, value):
         if isinstance(value, str) and key in ("method", "grid"):
             return conv(lang.parse_optvalue_text(value))
         if isinstance(value, (bool, int, float)) and not isinstance(value, lang.Node):
-            if key in ("strict",):
+            if key in ("strict", "disk_cache"):
                 return _bool(value)
+            if key == "flat_tol":
+                return float(value)
             if key == "read_cache_mb":
                 return _intval(int(value))
         return conv(value)

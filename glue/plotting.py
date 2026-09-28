@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import engine as E
 from . import lang
 from .errors import GlueError
 from .settings import PLOT_SETTINGS, SETTINGS, convert
@@ -127,11 +126,29 @@ class Series:
     frame: object
     err: object = None
 
+    @property
+    def yname(self):
+        return self.node.type.output_names[0]
 
-def _unwrap(node):
-    while isinstance(node, (E.Named, E.Using)):
-        node = node.node
-    return node
+    @property
+    def unit(self):
+        return self.node.type.outputs[0].unit
+
+    @property
+    def ylabel(self):
+        o = self.node.type.outputs[0]
+        return o.label or (self.node.name if self.node.name and len(self.node.name) < 30 else o.name)
+
+
+def _source_select(node):
+    """(table, column) if node is a column read straight from a table, else None."""
+    from .core import nodes as N
+
+    while isinstance(node, (N.FilterNode, N.RenameNode)):
+        node = node.kid()
+    if isinstance(node, N.SelectNode) and isinstance(node.kid(), N.SourceNode):
+        return node.kid(), node.params["outputs"][0]
+    return None
 
 
 def _column_text(session, name, unit=""):
@@ -146,77 +163,79 @@ def _column_text(session, name, unit=""):
 
 
 def plot(session, spec, log=print):
+    from .core import nodes as N
+
     opts, overrides = split_options(spec.options, session.plot_defaults)
     series = []
-    for i, item in enumerate(spec.items):
+    for item in spec.items:
         node, comp = session.compile(item.ast, overrides=overrides or None)
-        if node.kind == "table":
-            col = node.table.values[0] if node.table.values else "COLUMN"
-            raise GlueError(f"plot needs a column, not the table {node.text}. Use {node.text}.{col}")
-        frame, ctx, done, dropped = session.evaluate(node, comp, spec.where)
+        if len(node.type.outputs) != 1:
+            outs = node.type.output_names
+            raise GlueError(f"plot needs one output, but {item.ast.src()} has {len(outs)} "
+                            f"({', '.join(outs) or 'none'}). Pick one, as in {item.ast.src()}.{outs[0] if outs else 'E'}")
+        frame, ctx, _, _ = session.evaluate(node, comp, spec.where)
         for line in ctx.report.lines(session.settings.get("report")):
             log("  " + line)
         if len(frame) == 0:
             raise GlueError(f"{item.ast.src()} has no data" + (" for " + ", ".join(s.src() for s in spec.where)
                                                                 if spec.where else ""))
-        label = item.label or item.ast.src()
-        s = Series(label, node, frame)
+        s = Series(item.label or item.ast.src(), node, frame)
         if opts.get("errorbars"):
-            base = _unwrap(node)
-            if isinstance(base, E.SourceCol) and base.table.m(base.col).error:
-                enode = E.SourceCol(base.table, base.table.m(base.col).error, base.coord_sels, base.x_sels)
-                eframe, _, _, _ = session.evaluate(enode, comp, spec.where)
-                s.err = eframe[E.result_names(enode)].to_numpy()
+            found = _source_select(node)
+            if found and found[0].table.m(found[1]).error:
+                src, col = found
+                enode = N.select(src, [src.table.m(col).error])
+                eframe, _, _, _ = session.evaluate(enode, None, spec.where)
+                ins = node.type.input_names
+                merged = frame[ins].merge(eframe, on=ins, how="left")
+                s.err = merged[src.table.m(col).error].to_numpy(dtype=float)
         series.append(s)
 
-    kinds = {s.node.kind for s in series}
-    if len(kinds) > 1:
-        raise GlueError("can't plot curves and per-key values on the same axes")
-    kind = kinds.pop()
     by = list(spec.by)
-    coords = []
+    inputs = []
     for s in series:
-        for c in s.node.coords:
-            if c not in coords:
-                coords.append(c)
+        for c in s.node.type.input_names:
+            if c not in inputs:
+                inputs.append(c)
     for c in by:
-        if c not in coords:
-            raise GlueError(f"by {c}: the plotted values have no coordinate {c} (they have {', '.join(coords)})")
+        if c not in inputs:
+            raise GlueError(f"by {c}: the plotted values have no input {c} (they have {', '.join(inputs)})")
 
     def varying(c):
         return any(c in s.frame.columns and s.frame[c].nunique() > 1 for s in series)
 
-    if kind == "curves":
-        xname = series[0].node.xname
-        if spec.vs and spec.vs != xname:
-            raise GlueError(f"vs {spec.vs}: these curves have x {xname}. "
-                            f"To plot against a coordinate, reduce each curve first, as in max(...) vs {spec.vs}")
-    else:
-        xname = spec.vs
-        if xname is None:
-            free = [c for c in coords if c not in by and varying(c)]
+    xname = spec.vs
+    if xname is None:
+        axes = {s.node.type.axis for s in series}
+        if len(axes) == 1 and None not in axes:
+            xname = axes.pop()
+        else:
+            free = [c for c in inputs if c not in by and varying(c)]
             if len(free) != 1:
-                raise GlueError("these values have one number per key. Add `vs COORDINATE`, as in vs "
-                                + (free[0] if free else "U"))
+                raise GlueError("choose the horizontal axis with `vs INPUT`, as in vs " + (free[0] if free else "U"))
             xname = free[0]
-        if xname not in coords:
-            raise GlueError(f"vs {xname}: not a coordinate (coordinates: {', '.join(coords)})")
+    if xname not in inputs:
+        raise GlueError(f"vs {xname}: not an input of the plotted values (inputs: {', '.join(inputs)})")
+    if any(not s.node.type.has_input(xname) for s in series):
+        raise GlueError(f"vs {xname}: every plotted value needs the input {xname}")
+    exact_x = all(s.node.type.var(xname).exact for s in series)
+    kind = "keyed" if exact_x else "curves"
 
-    free = [c for c in coords if c not in by and c != xname and varying(c)]
+    free = [c for c in inputs if c not in by and c != xname and varying(c)]
     if free and not by and len(free) == 1:
         by = free
         free = []
     if free:
         more = ", ".join(free)
-        raise GlueError(f"coordinate{'s' if len(free) > 1 else ''} {more} not fixed. Curves for different values "
+        raise GlueError(f"input{'s' if len(free) > 1 else ''} {more} not fixed. Curves for different values "
                         f"would overlap. Add {free[0]} to where, or use: by {', '.join(by + free)}")
     if len(by) > 2:
-        raise GlueError("by takes at most two coordinates (color and line style)")
+        raise GlueError("by takes at most two inputs (color and line style)")
     if len(by) == 2 and len(series) > 1:
-        raise GlueError("with several plotted values, line style marks the value, so by takes one coordinate")
+        raise GlueError("with several plotted values, line style marks the value, so by takes one input")
 
     fixed = {}
-    for c in coords:
+    for c in inputs:
         if c in by or c == xname:
             continue
         vals = set()
@@ -280,7 +299,7 @@ def _matplotlib(session, spec, series, kind, xname, by, fixed, opts, log):
     svals = _values(series, style_by) if style_by else []
     for si, s in enumerate(series):
         f = s.frame
-        yname = E.result_names(s.node)
+        yname = s.yname
         groups = by if by else []
         grouped = f.groupby(groups, sort=True) if groups else [((), f)]
         ls_series = LINESTYLES[(state["series"] + si) % len(LINESTYLES)] if len(series) > 1 or spec.add else "-"
@@ -349,12 +368,11 @@ def _matplotlib(session, spec, series, kind, xname, by, fixed, opts, log):
     if opts.get("ylabel"):
         ax.set_ylabel(opts["ylabel"])
     elif len(series) == 1 and not spec.add:
-        node = s0.node
-        name = spec.items[0].label or node.label or s0.label
-        ax.set_ylabel(f"{name} [{node.unit}]" if node.unit else name)
+        name = spec.items[0].label or s0.ylabel
+        ax.set_ylabel(f"{name} [{s0.unit}]" if s0.unit else name)
     else:
-        units = {s.node.unit for s in series}
-        names = {_unwrap(s.node).yname for s in series}
+        units = {s.unit for s in series}
+        names = {s.yname for s in series}
         unit = units.pop() if len(units) == 1 else ""
         name = names.pop() if len(names) == 1 else ""
         if name or unit:
@@ -443,7 +461,7 @@ def _gnuplot(session, spec, series, kind, xname, by, fixed, opts, log):
     plots = []
     for i, s in enumerate(series):
         data = f"{stem}_{i}.dat"
-        frame = s.frame[by + [xname, E.result_names(s.node)]].sort_values(by + [xname])
+        frame = s.frame[by + [xname, s.yname]].sort_values(by + [xname])
         write_blocks(frame, list(by), data)
         keys = [k for k, _ in frame.groupby(by, sort=False)] if by else [()]
         with_ = "points" if opts.get("style") == "points" or kind == "keyed" else "lines"

@@ -6,7 +6,7 @@ import subprocess
 import traceback
 
 from . import lang
-from .compiler import BUILTINS
+from .elaborate import BUILTINS
 from .errors import GlueError
 from .guess import guess
 from .plotting import parse_plot, plot, split_options
@@ -19,11 +19,12 @@ Statements:
   NAME = EXPR [with ...]      define a variable (nothing is computed yet)
   EXPR [where ...]            show values
 Commands:
-  load FILE        reload          guess DIR        new table NAME ...   edit NAME
-  scan [NAME]      ls              info NAME        values NAME.COORD    show EXPR
-  explain STMT     del NAME        save NAME        export EXPR to FILE  status [NAME]
-  refresh NAME|--all               pin NAME         unpin NAME           plot Y ...
-  set [KEY VALUE]  unset KEY       run FILE         py                   help [TOPIC]   quit
+  load FILE [as PREFIX]            reload           guess DIR           new table NAME ...
+  edit NAME        scan [NAME]     ls               info NAME           values NAME.INPUT
+  show EXPR        explain STMT    del NAME         save NAME ...       export EXPR to FILE
+  status [NAME]    refresh NAME|--all               pin NAME            unpin NAME
+  invalidate NAME [where ...]      why NAME         gc                  plot Y ...
+  set [KEY VALUE]  unset KEY       run FILE         py                  help [TOPIC]   quit
 Topics: help expressions, help functions, help settings, help plot, help COMMAND""",
     "expressions": """\
   dmft.E                 column E of table dmft: one curve E(T) per (U, J, n)
@@ -32,17 +33,27 @@ Topics: help expressions, help functions, help settings, help plot, help COMMAND
   dmft.E / n             coordinates act as constants along each curve
   C / T                  a bare x name takes its points from the curve it meets
   dmft.E @ T=0.1         evaluate each curve at a point
-  (a - b) with grid=overlap(n=500), method=cubic""",
+  (a - b) with grid=overlap(n=500), method=cubic
+  dmft.E[E<0]            filters can also use outputs
+  rename(ed.E, u=U)      rename an input or output before combining
+  transform(ed.E, u, U = u * 2.0)   replace an input with a formula of it
+Every expression is translated into a core tree. `explain EXPR` shows it.""",
     "functions": """\
   abs sqrt exp log log10 sin cos tan sinh cosh tanh      elementwise
   resample(y, grid=..., method=...)                     evaluate on a new grid
   d(y, T, order=1, method=fd|pchip|..., grid=...)       derivative
   int(y, T, method=trapz|...)                           cumulative integral
   integral(y, T)                                        integral over each curve (one value per key)
-  max min mean first last count argmax argmin           reduce each curve to one value
+  max min mean sum first last count argmax argmin       reduce along the axis: max(y) or max(y, n)
   at(y, T=0.1)  or  y @ T=0.1                           value at a point
   stack(a=y1, b=y2, tag="source")                       stack families, adding a coordinate
-  using(expr, method=cubic, ...)                        evaluate expr with these settings""",
+  using(expr, method=cubic, ...)                        evaluate expr with these settings
+  rename(y, old=new)                                    rename inputs or outputs
+  transform(y, u, U = u * 2.0)                          replace input u with a formula
+  swap(y, T)                                            trade the input T with y's output
+  legendre(y, T, slope=p, result=G)                     Legendre transform along T
+Reductions, d, int, integral, and resample act along the default axis unless you name
+another input: mean(Eg, n), resample(y, grid=..., along=n).""",
     "settings": """\
   method       linear cubic pchip akima smooth(s=...)       interpolation
   grid         overlap(n=200) overlap(step=0.01) union() like(NAME) linspace(a,b,n) logspace(a,b,n) points([...])
@@ -52,6 +63,9 @@ Topics: help expressions, help functions, help settings, help plot, help COMMAND
   unmatched    drop error                                   keys on only one side
   nan_rows drop|error   strict true|false   report short|full|off
   fingerprint stat|hash   cache_format parquet|npz   datasets_dir PATH   read_cache_mb N
+  align auto|[T]   which inputs to interpolate along when combining fields
+  branches error|split   flat_tol X   for swap and legendre
+  disk_cache true|false  keep expensive intermediate results in .glue/cache
   plot.backend plot.style plot.cmap plot.size plot.save_script
 Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
     "plot": """\
@@ -64,7 +78,7 @@ Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
            xlabel="..." ylabel="..." cmap=NAME legend=auto|off|colorbar errorbars size=(w,h)
            backend=matplotlib|gnuplot, and settings like method=cubic
   Every coordinate must be fixed by where, used in by, or used as vs.""",
-    "load": "load FILE           load a project, table, or dataset file",
+    "load": "load FILE [as PREFIX]   load a project, table, calc, or dataset file. PREFIX is added to its names",
     "reload": "reload              reload all loaded files from disk",
     "guess": "guess DIR [name=NAME]   suggest a table definition for a directory tree",
     "new": 'new table NAME pattern="U_{U}/n_{n}.dat" columns=["T","E"] [root="data"] [x=T] [file=PATH]',
@@ -76,9 +90,15 @@ Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
     "show": "show EXPR [where ...] [with ...] [limit N]",
     "explain": "explain STATEMENT   show what would be read and computed, without reading data",
     "del": "del NAME            remove a session variable",
-    "save": "save NAME [as PATH] [where ...] [grid=...] [format=parquet|npz] [unit=\"...\"] [--recipe-only]",
+    "save": ("save NAME [as PATH] [where ...] [grid=...] [format=parquet|npz] [unit=\"...\"]   save a dataset\n"
+             "save NAME --recipe-only    save the calculation tree only, as a calc file\n"
+             "save NAME --view           write the variable as a view in the project file"),
     "export": "export EXPR to FILE.csv|.parquet|.dat [where ...] [with ...]",
-    "status": "status [NAME]       dataset states: fresh, stale, orphaned, modified",
+    "status": "status [NAME]       dataset states: fresh, stale, orphaned, modified, invalidated",
+    "invalidate": ("invalidate TABLE [where ...]   mark files as changed, so what depends on them recomputes\n"
+                   "invalidate NAME               drop cached values of a view or calc, or mark a dataset invalid"),
+    "why": "why NAME            the calculation tree of NAME, with the state of its leaves",
+    "gc": "gc                  delete cached values that no view, calc, or dataset uses",
     "refresh": "refresh NAME|--all [--full] [--force]",
     "pin": "pin NAME            never recompute NAME automatically",
     "unpin": "unpin NAME",
@@ -253,7 +273,12 @@ class Shell:
     # ---------------------------------------------------------------- commands
 
     def cmd_load(self, p, flags, text):
-        self.session.load(self._path(p.raw_word()))
+        path = self._path(p.raw_word())
+        prefix = ""
+        if p.accept_word("as"):
+            prefix = p.expect_name("a prefix")
+        p.expect_end()
+        self.session.load(path, prefix)
 
     def cmd_reload(self, p, flags, text):
         p.expect_end()
@@ -356,16 +381,9 @@ class Shell:
     def cmd_values(self, p, flags, text):
         ast = p.parse_expr()
         p.expect_end()
-        node, comp = self.session.compile(ast)
-        from . import engine as E
-
-        if not isinstance(node, E.CoordRef) or node.source is None:
-            raise GlueError("values needs a coordinate, as in values dmft.U")
-        ctx = E.Context(self.session.settings, comp.like_nodes)
-        vals = [k[0] for k in ctx.keys(node, [])]
         from .util import fmt_value
 
-        self.out("  " + " ".join(fmt_value(v) for v in vals))
+        self.out("  " + " ".join(fmt_value(v) for v in self.session.values(ast)))
 
     def cmd_explain(self, p, flags, text):
         s = self.session
@@ -426,7 +444,8 @@ class Shell:
                     raise GlueError(f"save has no option {key!r}. Options: grid, format, unit")
             else:
                 p.error("expected as, where, grid=, format=, or unit=")
-        self._lines(self.session.save(name, path, where, grid, fmt, unit, recipe_only="recipe-only" in flags))
+        self._lines(self.session.save(name, path, where, grid, fmt, unit, recipe_only="recipe-only" in flags,
+                                      view="view" in flags))
 
     def cmd_export(self, p, flags, text):
         ast = p.parse_expr()
@@ -461,6 +480,23 @@ class Shell:
         name = p.expect_name()
         p.expect_end()
         self._lines(self.session.pin(name, False))
+
+    def cmd_invalidate(self, p, flags, text):
+        name = p.expect_name()
+        where = []
+        if p.accept_word("where"):
+            where = p.parse_selectors()
+        p.expect_end()
+        self._lines(self.session.invalidate(name, where))
+
+    def cmd_why(self, p, flags, text):
+        name = p.expect_name()
+        p.expect_end()
+        self._lines(self.session.why(name))
+
+    def cmd_gc(self, p, flags, text):
+        p.expect_end()
+        self._lines(self.session.gc())
 
     def cmd_plot(self, p, flags, text):
         spec = parse_plot(p, text)

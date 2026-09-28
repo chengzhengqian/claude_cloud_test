@@ -30,10 +30,14 @@ def test_save_writes_recipe_and_cache(proj):
     s.define("x", lang.parse_expression("dE / 2"), {"method": glue.session.convert("method", "cubic")})
     s.save("x", grid=None)
     info = D.load_info(str(proj / "results" / "x.toml"))
-    assert info.expr == "(a.E - b.E) / 2"
-    assert info.source_expr == "dE / 2"
-    assert info.settings["method"] == "cubic"
+    assert info.surface == "dE / 2"
+    assert info.version == "0.2" and info.root in info.nodes
+    ops = [n["op"] for n in info.nodes.values()]
+    assert ops.count("source") == 2 and "align" in ops and "overlap" in ops
+    align = next(n for n in info.nodes.values() if n["op"] == "align")
+    assert align["method"] == "cubic" and align["along"] == "T"
     assert set(info.inputs) == {"a", "b"}
+    assert info.type.text() == "[U, n, T:ragged → x]"
     assert info.curves == 3 and info.rows == 600
     assert D.status(info).state == "fresh"
     project = (proj / "project.toml").read_text()
@@ -126,7 +130,9 @@ def test_save_with_where_and_grid(proj):
     s = quiet(proj / "project.toml")
     s.save("dE", path="out/dE_u1", where=lang.parse_where_text("U=1.0"), grid=parse_grid("overlap(n=50)"))
     info = s.datasets["dE_u1"].info
-    assert info.where == "U=1.0" and info.settings["grid"] == "overlap(n=50)"
+    ops = {n["op"]: n for n in info.nodes.values()}
+    assert ops["filter"]["predicate"] == "U=1.0"
+    assert ops["overlap"]["count"] == 50
     assert info.curves == 2 and info.rows == 100
 
 

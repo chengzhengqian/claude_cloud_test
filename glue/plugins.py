@@ -20,18 +20,18 @@ class OpDef:
     qualname: str
 
     def ref(self):
-        return f"{self.module}.{self.qualname}@{self.version}"
+        return f"{self.module}:{self.qualname}@{self.version}"
 
 
 def op(fn=None, *, kind="curve", version="1", name=None):
     """Register a custom operation.
 
-    kind="elementwise": f(y) -> y
+    kind="pointwise":   f(y) -> y  ("elementwise" also works)
     kind="curve":       f(x, y, **options) -> (x, y)
     kind="reduce":      f(x, y, **options) -> float
     """
-    if kind not in ("elementwise", "curve", "reduce"):
-        raise GlueError("kind must be elementwise, curve, or reduce")
+    if kind not in ("elementwise", "pointwise", "curve", "reduce"):
+        raise GlueError("kind must be pointwise, curve, or reduce")
 
     def register(f):
         n = name or f.__name__
@@ -56,7 +56,7 @@ def load_modules(modules, paths, base_dir):
 def ensure(ref):
     """Import the module behind a recipe's plugin reference like mod.fn@1."""
     target, _, version = ref.partition("@")
-    module = target.rsplit(".", 1)[0]
+    module = target.split(":", 1)[0] if ":" in target else target.rsplit(".", 1)[0]
     try:
         importlib.import_module(module)
     except ImportError as e:

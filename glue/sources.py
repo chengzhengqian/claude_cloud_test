@@ -14,9 +14,9 @@ import pandas as pd
 
 from .errors import GlueError
 from .template import Template
-from .util import check_name, expand_path, normalize, read_toml, relpath, sha256_file
+from .util import check_name, expand_path, fmt_key, normalize, read_toml, relpath, sha256_file
 
-SPEC_VERSION = (0, 1)
+SPEC_VERSION = (0, 2)
 
 
 def check_version(data, path):
@@ -282,6 +282,13 @@ class SourceTable:
         self.skipped = 0
         self.index_dirs = {}
         self.index_path = None
+        self.inputs = []            # canonical inputs, in order
+        self.outputs_decl = None    # [field].outputs, if given
+        self.exact_decl = set()     # content inputs declared exact
+        self.template_coords = []   # placeholder names in the path template
+        self.transforms = []        # [field.transform] steps
+        self.maps = {}              # [field.map] output formulas
+        self.def_id = ""
 
     # --- schema
 
@@ -323,13 +330,102 @@ class SourceTable:
 
     @property
     def values(self):
-        if self._values is not None:
-            return self._values
         err = set(self.errors.values())
-        return [c for c in self.columns() if c not in self.coords and c != self.x and c not in err]
+        return [c for c in self.output_names() if c not in err]
 
     def has_column(self, col):
-        return col in self.coords or col == self.x or col in self.columns()
+        return col in self.coords or col == self.x or col in self.columns() or col in self.output_names()
+
+    @property
+    def path_inputs(self):
+        return list(self.locator_coords) + [c for c in self.constants if c not in self.locator_coords]
+
+    def output_names(self):
+        if self.outputs_decl is not None:
+            return list(self.outputs_decl)
+        from .core import formula as F
+
+        consumed = {t["from"] for t in self.transforms}
+        for text in self.maps.values():
+            consumed |= F.names(F.parse(text))
+        cols = [c for c in self.columns() if c not in self.inputs and c not in consumed]
+        return cols + [m for m in self.maps if m not in cols and m not in self.inputs]
+
+    def ftype(self):
+        from .core.types import FType, Out, Var
+
+        exact = (set(self.inputs) - {self.x}) | set(self.path_inputs) | self.exact_decl
+        ins = tuple(Var(c, self.ctype(c), c in exact, self.unit(c)) for c in self.inputs)
+        outs = tuple(Out(c, self.unit(c), self.m(c).label) for c in self.output_names())
+        return FType(ins, outs, self.x)
+
+    def plan(self, sels):
+        return len(self.filter_chunks(sels)), len(self.index()), "files"
+
+    def digest(self, mode="stat", salt=None):
+        return digest(self.chunk_entries(mode, salt), mode)
+
+    def apply_path_transforms(self, coords):
+        """Apply [field.transform] steps that only use path values, at index time."""
+        from .core import formula as F
+
+        for t in self.transforms:
+            if not t["path"]:
+                continue
+            row = pd.DataFrame([coords])
+            val = float(np.round(F.evaluate(F.parse(t["formula"]), row)[0], self.digits(t["to"]))) + 0.0
+            if t["from"] != t["to"]:
+                coords.pop(t["from"], None)
+            coords[t["to"]] = val
+        return coords
+
+    def _raw_points(self, sels):
+        chunks = self.filter_chunks(sels)
+        frames = []
+        for ch in chunks:
+            df = self.read_chunk(ch).copy()
+            for c, v in ch.coords.items():
+                df[c] = v
+            df["__file"] = relpath(ch.path, os.getcwd())
+            frames.append(df)
+        if not frames:
+            return pd.DataFrame(columns=list(self.inputs) + self.output_names() + ["__file"])
+        return pd.concat(frames, ignore_index=True)
+
+    def read_points(self, sels, duplicates, ctx=None):
+        """All points matching sels: inputs + outputs, repaired per `duplicates`."""
+        from .core import formula as F
+
+        df = self._raw_points(sels)
+        for t in self.transforms:
+            if t["path"]:
+                continue
+            new = np.round(F.evaluate(F.parse(t["formula"]), df), self.digits(t["to"])) + 0.0
+            if t["from"] != t["to"]:
+                df = df.drop(columns=[t["from"]])
+            df[t["to"]] = new
+        for name, text in self.maps.items():
+            df[name] = F.evaluate(F.parse(text), df)
+        outs = self.output_names()
+        missing = [c for c in self.inputs + outs if c not in df.columns]
+        if missing and len(df):
+            raise GlueError(f"table {self.name}: column {missing[0]} not found (columns: "
+                            f"{', '.join(c for c in df.columns if c != '__file')})")
+        for c in missing:
+            df[c] = pd.Series(dtype=float)
+        for c in self.inputs:
+            if self.ctype(c) == "float" and len(df):
+                df[c] = np.round(df[c].astype(float), self.digits(c)) + 0.0
+        bad = df[self.inputs].isna().any(axis=1) if self.inputs and len(df) else None
+        if bad is not None and bad.any():
+            if ctx is not None:
+                ctx.report.count(f"{self.name}: rows with missing inputs removed", int(bad.sum()))
+            df = df[~bad]
+        df = apply_sel_frame(df, sels, self)
+        if self.inputs and len(df):
+            df = _repair_duplicates(df, self, duplicates, ctx)
+        cols = self.inputs + outs
+        return df[cols].reset_index(drop=True)
 
     def label(self, col):
         m = self.m(col)
@@ -443,19 +539,71 @@ class SourceTable:
 
     # --- fingerprints
 
-    def chunk_entries(self, mode="stat"):
-        """{rel: [size, mtime_ns, sha]} for every chunk."""
+    def chunk_entries(self, mode="stat", salt=None):
+        """{rel: [size, mtime_ns, sha, salt]} for every chunk. The salt carries manual invalidations."""
+        epoch, chunks = salt or (0, {})
         out = {}
         seen = {}
         for ch in self.index():
-            if ch.path in seen:
-                out[ch.rel] = seen[ch.path]
-                continue
-            size, mtime = ch.stat()
-            entry = [size, mtime, sha256_file(ch.path) if mode == "hash" else ""]
-            seen[ch.path] = entry
-            out[ch.rel] = entry
+            if ch.path not in seen:
+                size, mtime = ch.stat()
+                seen[ch.path] = (size, mtime, sha256_file(ch.path) if mode == "hash" else "")
+            size, mtime, sha = seen[ch.path]
+            n = chunks.get(ch.rel, 0)
+            out[ch.rel] = [size, mtime, sha, f"{epoch}.{n}" if (epoch or n) else ""]
         return out
+
+
+def apply_sel_frame(df, sels, table):
+    """Apply literal filters to a frame of raw points, with the table's digits for matching."""
+    if not sels or len(df) == 0:
+        return df
+    mask = np.ones(len(df), dtype=bool)
+    for sel in sels:
+        if sel.name not in df.columns:
+            continue
+        col = df[sel.name]
+        if table.ctype(sel.name) == "str":
+            mask &= np.array([match_selector(sel, v, "str") for v in col.astype(str)], dtype=bool)
+        elif sel.op in ("=", "!="):
+            d = table.digits(sel.name)
+            vals = sel.value if isinstance(sel.value, (list, tuple)) else [sel.value]
+            targets = [normalize(v, "float", d) for v in vals]
+            m = np.isin(np.round(col.to_numpy(dtype=float), d), targets)
+            mask &= m if sel.op == "=" else ~m
+        else:
+            mask &= x_mask(col.to_numpy(dtype=float), [sel])
+    return df[mask]
+
+
+def _repair_duplicates(df, table, policy, ctx):
+    ins = table.inputs
+    dup = df.duplicated(ins, keep=False)
+    if not dup.any():
+        return df
+    key = [c for c in ins if c != table.x]
+    x = table.x or ins[-1]
+    if policy == "error":
+        row = df[dup].iloc[0]
+        where = f"curve {fmt_key(key, [row[k] for k in key])}" if key else "the data"
+        file = f" in {row['__file']}" if "__file" in df.columns else ""
+        raise GlueError(f"{where}{file} has repeated {x} = {row[x]:g}. "
+                        "Set duplicates to mean, first, last, or drop to continue.")
+    n_curves = len(df[dup][key].drop_duplicates()) if key else 1
+    if ctx is not None:
+        ctx.report.count(f"curves with repeated {x} ({policy})", n_curves)
+    outs = [c for c in df.columns if c not in ins and c != "__file"]
+    if policy == "first":
+        return df.drop_duplicates(ins, keep="first")
+    if policy == "last":
+        return df.drop_duplicates(ins, keep="last")
+    if policy == "drop":
+        return df[~dup]
+    agg = {c: "mean" for c in outs if pd.api.types.is_numeric_dtype(df[c])}
+    agg.update({c: "first" for c in outs if c not in agg})
+    if "__file" in df.columns:
+        agg["__file"] = "first"
+    return df.groupby(ins, sort=False, as_index=False).agg(agg)
 
 
 class _Eq:
@@ -472,8 +620,10 @@ def digest(entries, mode="stat"):
 
     h = hashlib.sha256()
     for rel in sorted(entries):
-        size, mtime, sha = entries[rel]
-        h.update(f"{rel}|{size}|{sha if mode == 'hash' else mtime}\n".encode())
+        e = list(entries[rel]) + [""] * 4
+        size, mtime, sha, salt = e[:4]
+        tail = f"|{salt}" if salt else ""
+        h.update(f"{rel}|{size}|{sha if mode == 'hash' else mtime}{tail}\n".encode())
     return "sha256:" + h.hexdigest()[:16]
 
 
@@ -498,7 +648,7 @@ class GlobTable(SourceTable):
     def _coords(self, raw):
         c = {k: normalize(v, self.ctype(k), self.digits(k)) for k, v in raw.items()}
         c.update(self.constants)
-        return c
+        return self.apply_path_transforms(c)
 
     def _read_index_cache(self):
         if not self.index_path or not os.path.exists(self.index_path):
@@ -561,6 +711,7 @@ class Hdf5Table(SourceTable):
                 raw.update(fraw)
                 c = {k: normalize(v, self.ctype(k), self.digits(k)) for k, v in raw.items()}
                 c.update(self.constants)
+                c = self.apply_path_transforms(c)
                 rel = f"{os.path.relpath(fpath, self.dir)}::{obj}"
                 chunks.append(Chunk(rel, fpath, c, internal=obj))
         return chunks
@@ -652,6 +803,28 @@ class SqliteTable(SourceTable):
             self._key_chunks[k] = chunks
         return keys
 
+    def plan(self, sels):
+        return 1, 1, "sqlite"
+
+    def _raw_points(self, sels):
+        content = [c for c in self.inputs if c not in self.constants]
+        where, params = self._where([p for p in sels if p.name in content and p.literal])
+        with self._connect() as con:
+            try:
+                cur = con.execute(f"SELECT * FROM ({self.base}){where}", params)
+            except sqlite3.Error as e:
+                raise GlueError(f"{self.db}: {e}") from None
+            names = [self.rename.get(d[0], d[0]) for d in cur.description]
+            rows = cur.fetchall()
+        df = pd.DataFrame(rows, columns=names)
+        for c in df.columns:
+            if self.ctype(c) != "str":
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        for c, v in self.constants.items():
+            df[c] = v
+        df["__file"] = relpath(self.db, os.getcwd())
+        return df
+
     def read_key(self, key, columns, x_selectors=()):
         keyd = dict(zip(self.coords, key))
         sels = [_Eq(c, keyd[c]) for c in self.content_coords]
@@ -705,6 +878,15 @@ class CacheTable(SourceTable):
     def _discover_columns(self):
         return list(self.frame().columns)
 
+    def plan(self, sels):
+        return 1, 1, "dataset"
+
+    def _raw_points(self, sels):
+        return self.frame()
+
+    def read_points(self, sels, duplicates="error", ctx=None):
+        return apply_sel_frame(self.frame(), sels, self).reset_index(drop=True)
+
     def keys(self, selectors, explain=None):
         if explain is not None:
             explain[self.name] = (1, 1)
@@ -753,10 +935,11 @@ def _meta_from(d, where):
     return m
 
 
-def load_table(path, name=None, index_dir=None):
+def load_table(path, name=None, index_dir=None, base_dir=None):
     data = read_toml(path)
     check_version(data, path)
-    check_keys(data, {"glue", "kind", "name", "description", "source", "curves", "columns", "meta"}, path)
+    check_keys(data, {"glue", "kind", "name", "description", "source", "curves", "field", "columns", "meta"},
+               path)
     if data.get("kind") != "table":
         raise GlueError(f"{path}: expected kind = \"table\", found {data.get('kind')!r}")
     name = name or data.get("name") or os.path.splitext(os.path.basename(path))[0]
@@ -819,33 +1002,113 @@ def load_table(path, name=None, index_dir=None):
         table.m(k).type = "str" if isinstance(v, str) else "int" if isinstance(v, int) else "float"
         table.constants[k] = normalize(v, table.ctype(k), table.digits(k))
 
-    curves = data.get("curves", {})
-    check_keys(curves, {"by", "x", "y"}, f"{path} [curves]")
-    by = list(curves.get("by", []))
-    coords = list(by)
-    for c in table.locator_coords + list(table.constants):
-        if c not in coords:
-            coords.append(c)
-    if locator == "sqlite" and not by:
-        pass
-    table.coords = coords
-    table.x = curves.get("x")
-    if table.x in coords:
-        raise GlueError(f"{path}: {table.x} can't be both a coordinate and x")
-    if "y" in curves:
-        table._values = list(curves["y"])
-    for c in by:
-        if c not in table.locator_coords and c not in table.constants:
-            table.m(c)
+    _load_field(table, data, path, locator)
     for col, m in table.meta.items():
         if m.error and m.error == col:
             raise GlueError(f"{path}: column {col} can't be its own error column")
+    table.def_id = _definition_id(table, data, src, locator, base_dir or base)
     if index_dir and isinstance(table, GlobTable):
         import hashlib
 
         tag = hashlib.sha1(os.path.abspath(path).encode()).hexdigest()[:10]
         table.index_path = os.path.join(index_dir, f"{name}-{tag}.json")
     return table
+
+
+def _load_field(table, data, path, locator):
+    """[field] (or the older [curves]): inputs, outputs, axis, and conventions applied on reading."""
+    from .core import formula as F
+
+    field, curves = data.get("field"), data.get("curves")
+    if field is not None and curves is not None:
+        raise GlueError(f"{path}: use [field] or [curves], not both")
+    template = list(table.locator_coords)
+    table.template_coords = template
+    path_names = set(template) | set(table.constants)
+    effective = list(template)
+    transforms = []
+    if field is not None:
+        check_keys(field, {"inputs", "outputs", "axis", "exact", "transform", "map"}, f"{path} [field]")
+        for to, spec in field.get("transform", {}).items():
+            if not isinstance(spec, dict) or "from" not in spec or "formula" not in spec:
+                raise GlueError(f"{path} [field.transform]: {to} needs {{ from = \"...\", formula = \"...\" }}")
+            ast = F.parse(spec["formula"])
+            deps = F.names(ast)
+            at_path = spec["from"] in path_names and deps <= path_names
+            transforms.append({"to": to, "from": spec["from"], "formula": ast.src(), "path": at_path})
+            table.m(to).type = "float"
+            if at_path:
+                path_names = (path_names - {spec["from"]}) | {to}
+                effective = [to if c == spec["from"] else c for c in effective]
+        table.maps = {k: F.parse(v).src() for k, v in field.get("map", {}).items()}
+        if "inputs" not in field:
+            raise GlueError(f"{path}: [field] needs inputs = [...]")
+        inputs = list(field["inputs"])
+        outputs = list(field["outputs"]) if "outputs" in field else None
+        axis = field.get("axis")
+        table.exact_decl = set(field.get("exact", []))
+    else:
+        curves = curves or {}
+        check_keys(curves, {"by", "x", "y"}, f"{path} [curves]")
+        inputs = list(curves.get("by", []))
+        for c in template + list(table.constants):
+            if c not in inputs:
+                inputs.append(c)
+        axis = curves.get("x")
+        if axis in inputs:
+            raise GlueError(f"{path}: {axis} can't be both a coordinate and x")
+        if axis:
+            inputs.append(axis)
+        outputs = list(curves["y"]) if "y" in curves else None
+    table.transforms = transforms
+    table.locator_coords = effective
+    missing = [c for c in effective + list(table.constants) if c not in inputs]
+    if missing:
+        raise GlueError(f"{path}: [field] inputs must list every path placeholder and constant. Missing: "
+                        f"{', '.join(missing)}")
+    if len(set(inputs)) != len(inputs):
+        raise GlueError(f"{path}: an input is listed twice")
+    content = [c for c in inputs if c not in effective and c not in table.constants]
+    if axis is None and field is not None and len(content) == 1:
+        axis = content[0]
+    if axis is not None and axis not in inputs:
+        raise GlueError(f"{path}: axis {axis} must be one of the inputs")
+    for c in content:
+        table.m(c)
+    table.inputs = inputs
+    table.outputs_decl = outputs
+    table.x = axis
+    table.coords = [c for c in inputs if c != axis]
+    if outputs is not None:
+        table._values = [c for c in outputs if not any(m.error == c for m in table.meta.values())]
+
+
+def _definition_id(table, data, src, locator, base):
+    """The leaf id: what the table reads, not its name or where its TOML file sits (core.md 6.5)."""
+    import hashlib
+
+    from .core.store import dumps
+
+    def loc(raw, resolved):
+        if "${" in str(raw):
+            return str(raw)
+        return relpath(resolved, base).replace(os.sep, "/")
+
+    d = {"locator": locator, "reader": table.reader, "inputs": table.inputs, "outputs": table.outputs_decl,
+         "axis": table.x, "exact": sorted(table.exact_decl), "transform": table.transforms, "map": table.maps,
+         "constants": table.constants, "rename": src.get("rename"),
+         "types": {c: table.ctype(c) for c in table.inputs},
+         "digits": {c: table.digits(c) for c in table.inputs if table.ctype(c) == "float"}}
+    if locator == "glob":
+        d["where"] = loc(src.get("root", "."), table.root)
+        d["pattern"] = src["pattern"]
+    elif locator == "hdf5":
+        d["where"] = loc(src["file"], table.file_template)
+        d["pattern"] = src["pattern"]
+    else:
+        d["where"] = loc(src["file"], table.db)
+        d["query"] = src.get("query") or f"table:{src.get('table')}"
+    return hashlib.sha256(dumps(d).encode()).hexdigest()[:12]
 
 
 def describe_source(table):

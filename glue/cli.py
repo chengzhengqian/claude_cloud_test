@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 
+from . import __version__
 from .errors import GlueError
 
 
@@ -71,7 +72,7 @@ def main(argv=None):
                 print(line)
             return 0
         s = _session(args.project, args.trust)
-        print("glue 0.1. Type help for commands, quit to leave.")
+        print(f"glue {__version__}. Type help for commands, quit to leave.")
         Shell(s).loop()
         return 0
     except GlueError as e:

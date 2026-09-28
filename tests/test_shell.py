@@ -26,7 +26,7 @@ def run(sh, text):
 
 def test_show_and_assignment(sh):
     out = run(sh, "dE where U=1.0 limit 3")
-    assert "aligned a.E, b.E: 1 curve matched" in out
+    assert "aligned a.E, b.E: 2 curves matched" in out
     assert "more rows" in out
     run(sh, "m = max(a.E) with method=cubic")
     out = run(sh, "show m")
@@ -108,9 +108,20 @@ def test_new_table_and_guess(sh, proj):
     assert "4 curves" in run(sh, "info a2")
 
 
-def test_save_recipe_only_writes_view(sh, proj):
+def test_save_view_writes_surface_text(sh, proj):
     run(sh, "r = a.E / g.gap")
-    out = run(sh, "save r --recipe-only")
+    out = run(sh, "save r --view")
     assert "wrote view r" in out
     assert 'r = "a.E / g.gap"' in (proj / "project.toml").read_text()
     assert "view     r" in run(sh, "ls")
+
+
+def test_save_recipe_only_writes_calc(sh, proj):
+    run(sh, "r = a.E / g.gap with method=cubic")
+    out = run(sh, "save r --recipe-only")
+    assert "wrote calc" in out
+    assert 'r = "calcs/r.toml"' in (proj / "project.toml").read_text()
+    calc = (proj / "calcs" / "r.toml").read_text()
+    assert 'kind = "calc"' in calc and "[cache]" not in calc
+    assert "calc     r" in run(sh, "ls")
+    assert "r" in run(sh, "r where U=1.0 limit 2")

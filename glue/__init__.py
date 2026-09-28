@@ -1,6 +1,6 @@
 """glue: describe, combine, and plot scientific data spread across many files."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .errors import GlueError  # noqa: E402
 from .plugins import op  # noqa: E402

@@ -1,6 +1,7 @@
-"""Saved datasets: cached data plus the recipe that made it."""
+"""Saved datasets: a calculation tree, its type, its cached value, and fingerprints (core.md 6)."""
 
 import datetime as dt
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -9,82 +10,86 @@ import numpy as np
 import pandas as pd
 
 from . import __version__
-from . import engine as E
 from . import lang
-from .compiler import Compiler, Entity, Expander
+from .core import LIB
+from .core import nodes as N
+from .core.context import Context
+from .core.formula import Pred, apply_preds, pred_from_selector, predicate_text
+from .core.store import Store, find_glue_dir, load_epochs, salts
+from .core.tree import dump_nodes, load_nodes
+from .core.types import FType, Out, Var
+from .elaborate import Elaborator, Entity
 from .errors import GlueError
-from .settings import RECIPE_KEYS, GridSpec, Settings, convert, to_text
-from .sources import (CacheTable, ColumnMeta, check_keys, check_version, digest, load_table, _meta_from)
+from .settings import Settings, convert
+from .sources import CacheTable, ColumnMeta, GlobTable, Hdf5Table, check_keys, check_version, digest, load_table, _meta_from
 from .util import check_name, read_toml, relpath, sha256_file, toml_dumps
 
-TOP_KEYS = {"glue", "kind", "name", "created", "tool", "pinned", "description", "reproducible",
-            "recipe", "curves", "columns", "cache", "fingerprint", "meta"}
+TOP_KEYS = {"glue", "kind", "name", "created", "tool", "pinned", "description", "reproducible", "invalid",
+            "type", "recipe", "curves", "columns", "cache", "fingerprint", "meta"}
 
 
 @dataclass
 class DatasetInfo:
     path: str
     name: str
+    kind: str = "dataset"   # dataset or calc
+    version: str = "0.2"
     created: object = None
     tool: str = ""
     pinned: bool = False
+    invalid: bool = False
     description: str = ""
     reproducible: bool = True
-    expr: str = ""
-    source_expr: str = ""
-    where: str = ""
-    inputs: dict = field(default_factory=dict)      # name -> path relative to the dataset file
-    settings: dict = field(default_factory=dict)    # key -> text
-    plugins: dict = field(default_factory=dict)     # name -> module.fn@version
-    by: list = field(default_factory=list)
-    x: str = None
-    y: list = field(default_factory=list)
-    columns: dict = field(default_factory=dict)     # name -> ColumnMeta
+    surface: str = ""
+    root: str = ""
+    lib: str = LIB
+    inputs: dict = field(default_factory=dict)   # label -> path relative to this file
+    nodes: dict = field(default_factory=dict)    # node id -> node table
+    type: FType = None
     cache_file: str = ""
     format: str = "parquet"
     sha256: str = ""
-    rows: int = 0
+    points: int = 0
     curves: int = 0
     dropped: int = 0
     fp_mode: str = "stat"
     fingerprints: dict = field(default_factory=dict)
     meta: dict = field(default_factory=dict)
+    # version 0.1 recipes, translated on first refresh
+    expr: str = ""
+    settings: dict = field(default_factory=dict)
+    where: str = ""
 
     @property
     def dir(self):
         return os.path.dirname(os.path.abspath(self.path))
 
-    def input_path(self, name):
-        return os.path.normpath(os.path.join(self.dir, self.inputs[name]))
+    @property
+    def rows(self):
+        return self.points
+
+    def input_path(self, label):
+        return os.path.normpath(os.path.join(self.dir, self.inputs[label]))
 
     def to_toml(self):
-        d = {"glue": "0.1", "kind": "dataset", "name": self.name,
-             "created": self.created or dt.datetime.now(dt.timezone.utc), "tool": self.tool,
-             "pinned": self.pinned, "description": self.description}
+        d = {"glue": "0.2", "kind": self.kind, "name": self.name,
+             "created": self.created or dt.datetime.now(dt.timezone.utc), "tool": self.tool}
+        if self.kind == "dataset":
+            d["pinned"] = self.pinned
+            if self.invalid:
+                d["invalid"] = True
+        d["description"] = self.description
         if not self.reproducible:
             d["reproducible"] = False
-        else:
-            recipe = {"expr": self.expr, "source_expr": self.source_expr, "where": self.where,
-                      "inputs": dict(self.inputs), "settings": dict(self.settings)}
-            if self.plugins:
-                recipe["plugins"] = dict(self.plugins)
-            d["recipe"] = recipe
-        curves = {"by": list(self.by)}
-        if self.x:
-            curves["x"] = self.x
-        curves["y"] = list(self.y)
-        d["curves"] = curves
-        cols = {}
-        for c, m in self.columns.items():
-            entry = {k: getattr(m, k) for k in ("type", "unit", "label") if getattr(m, k) and not (k == "type" and m.type == "float")}
-            if entry:
-                cols[c] = entry
-        if cols:
-            d["columns"] = cols
-        d["cache"] = {"file": os.path.basename(self.cache_file), "format": self.format, "sha256": self.sha256,
-                      "rows": self.rows, "curves": self.curves, "dropped": self.dropped}
+        d["type"] = self.type.to_toml()
         if self.reproducible:
-            d["fingerprint"] = {"mode": self.fp_mode, **self.fingerprints}
+            d["recipe"] = {"lib": self.lib, "surface": self.surface, "root": self.root,
+                           "inputs": dict(self.inputs), "nodes": self.nodes}
+        if self.kind == "dataset":
+            d["cache"] = {"file": os.path.basename(self.cache_file), "format": self.format, "sha256": self.sha256,
+                          "points": self.points, "curves": self.curves, "dropped": self.dropped}
+            if self.reproducible:
+                d["fingerprint"] = {"mode": self.fp_mode, **self.fingerprints}
         if self.meta:
             d["meta"] = self.meta
         return toml_dumps(d)
@@ -98,52 +103,77 @@ def load_info(path, name=None):
     data = read_toml(path)
     check_version(data, path)
     check_keys(data, TOP_KEYS, path)
-    if data.get("kind") != "dataset":
-        raise GlueError(f"{path}: expected kind = \"dataset\"")
+    kind = data.get("kind")
+    if kind not in ("dataset", "calc"):
+        raise GlueError(f"{path}: expected kind = \"dataset\" or \"calc\"")
     info = DatasetInfo(path=os.path.abspath(path), name=name or data.get("name") or
-                       os.path.splitext(os.path.basename(path))[0])
+                       os.path.splitext(os.path.basename(path))[0], kind=kind)
+    info.version = str(data.get("glue"))
     info.created = data.get("created")
     info.tool = data.get("tool", "")
     info.pinned = bool(data.get("pinned", False))
+    info.invalid = bool(data.get("invalid", False))
     info.description = data.get("description", "")
     info.reproducible = bool(data.get("reproducible", True)) and "recipe" in data
     r = data.get("recipe", {})
-    check_keys(r, {"expr", "source_expr", "where", "inputs", "settings", "plugins"}, f"{path} [recipe]")
-    info.expr = r.get("expr", "")
-    info.source_expr = r.get("source_expr", "")
-    info.where = r.get("where", "")
     info.inputs = dict(r.get("inputs", {}))
-    info.settings = {k: str(v) if not isinstance(v, bool) else ("true" if v else "false")
-                     for k, v in r.get("settings", {}).items()}
-    info.plugins = dict(r.get("plugins", {}))
-    c = data.get("curves", {})
-    info.by = list(c.get("by", []))
-    info.x = c.get("x")
-    info.y = list(c.get("y", []))
-    for col, d in data.get("columns", {}).items():
-        info.columns[col] = _meta_from(d, f"{path} [columns.{col}]")
+    if "nodes" in r:
+        check_keys(r, {"lib", "surface", "root", "inputs", "nodes"}, f"{path} [recipe]")
+        info.lib = r.get("lib", LIB)
+        info.surface = r.get("surface", "")
+        info.root = r.get("root", "")
+        info.nodes = {k: dict(v) for k, v in r.get("nodes", {}).items()}
+    else:
+        check_keys(r, {"expr", "source_expr", "where", "inputs", "settings", "plugins"}, f"{path} [recipe]")
+        info.version = "0.1"
+        info.expr = r.get("expr", "")
+        info.surface = r.get("source_expr", "") or info.expr
+        info.where = r.get("where", "")
+        info.settings = {k: str(v) if not isinstance(v, bool) else ("true" if v else "false")
+                         for k, v in r.get("settings", {}).items()}
+    if "type" in data:
+        info.type = FType.from_toml(data["type"])
+    else:
+        c = data.get("curves", {})
+        cols = {k: _meta_from(v, f"{path} [columns.{k}]") for k, v in data.get("columns", {}).items()}
+        by, x = list(c.get("by", [])), c.get("x")
+        ins = [Var(b, cols[b].type if b in cols else "float", True) for b in by]
+        if x:
+            ins.append(Var(x, "float", False, cols[x].unit if x in cols else ""))
+        outs = [Out(y, cols[y].unit if y in cols else "") for y in c.get("y", [])]
+        info.type = FType(tuple(ins), tuple(outs), x)
     cache = data.get("cache", {})
     info.cache_file = os.path.join(info.dir, cache.get("file", info.name + ".parquet"))
     info.format = cache.get("format", "parquet")
     info.sha256 = cache.get("sha256", "")
-    info.rows = cache.get("rows", 0)
+    info.points = cache.get("points", cache.get("rows", 0))
     info.curves = cache.get("curves", 0)
     info.dropped = cache.get("dropped", 0)
     fp = dict(data.get("fingerprint", {}))
     info.fp_mode = fp.pop("mode", "stat")
     info.fingerprints = fp
     info.meta = data.get("meta", {})
+    if not info.root:
+        info.root = "legacy" + hashlib.sha256((info.sha256 or info.path).encode()).hexdigest()[:6]
     return info
 
 
 def table_from_info(info, name=None):
     t = CacheTable(name or info.name, info.path, info.cache_file, info.format)
-    t.coords = list(info.by)
-    t.x = info.x
-    t._values = list(info.y)
-    t.meta = {k: ColumnMeta(**vars(v)) for k, v in info.columns.items()}
+    ft = info.type
+    t.inputs = ft.input_names
+    t.outputs_decl = ft.output_names
+    t.x = ft.axis
+    t.coords = [c for c in ft.input_names if c != ft.axis]
+    t._values = ft.output_names
+    for v in ft.inputs:
+        t.meta[v.name] = ColumnMeta(type=v.dtype, unit=v.unit)
+    for o in ft.outputs:
+        t.meta[o.name] = ColumnMeta(unit=o.unit, label=o.label)
     t.description = info.description
+    t.def_id = "dataset:" + info.root
     t.info = info
+    t.ftype = lambda: info.type
     return t
 
 
@@ -170,7 +200,8 @@ def write_cache_file(path, fmt, frame, chunks_meta):
         arrays = {}
         for c in frame.columns:
             col = frame[c]
-            arrays[f"col:{c}"] = col.to_numpy(dtype=str) if col.dtype == object or str(col.dtype).startswith("str") else col.to_numpy()
+            is_str = col.dtype == object or str(col.dtype).startswith("str")
+            arrays[f"col:{c}"] = col.to_numpy(dtype=str) if is_str else col.to_numpy()
         with open(path, "wb") as f:
             np.savez(f, __glue_columns__=np.array(list(frame.columns)), __glue_chunks__=np.array(blob), **arrays)
     else:
@@ -186,9 +217,7 @@ def read_cache_file(path, fmt):
             raise GlueError("reading Parquet needs pyarrow: pip install pyarrow") from None
         table = pq.read_table(path)
         meta = table.schema.metadata or {}
-        frame = table.to_pandas()
-        chunks = json.loads(meta.get(b"glue.chunks", b"{}"))
-        return frame, chunks
+        return table.to_pandas(), json.loads(meta.get(b"glue.chunks", b"{}"))
     with np.load(path, allow_pickle=False) as z:
         cols = [str(c) for c in z["__glue_columns__"]]
         frame = pd.DataFrame({c: z[f"col:{c}"] for c in cols})
@@ -196,26 +225,34 @@ def read_cache_file(path, fmt):
     return frame, chunks
 
 
-# ------------------------------------------------------------------ recipes
+# ------------------------------------------------------------------ building trees from files
+
+
+def project_dirs(path):
+    g = find_glue_dir(path)
+    if g is None:
+        return None, os.path.dirname(os.path.abspath(path))
+    return g, os.path.dirname(g)
 
 
 class RecipeNamespace:
-    """Resolves names in a recipe using only its [recipe.inputs]."""
+    """Resolves a recipe's leaves using only its [recipe.inputs]."""
 
-    def __init__(self, info, index_dir=None):
+    def __init__(self, info):
         self.info = info
+        self.glue_dir, self.base = project_dirs(info.path)
+        self.index_dir = os.path.join(self.glue_dir, "index") if self.glue_dir else None
         self.entities = {}
-        for name in info.inputs:
-            path = info.input_path(name)
+        for label in info.inputs:
+            path = info.input_path(label)
             if not os.path.exists(path):
-                raise GlueError(f"dataset {info.name}: input {name} not found at {path}")
+                raise GlueError(f"{info.name}: input {label} not found at {relpath(path, os.getcwd())}")
             kind = read_toml(path).get("kind")
             if kind == "dataset":
-                t = load_dataset(path, name)
-                self.entities[name] = Entity("dataset", name, table=t)
+                self.entities[label] = Entity("dataset", label, table=load_dataset(path, label))
             else:
-                t = load_table(path, name, index_dir=index_dir)
-                self.entities[name] = Entity("table", name, table=t)
+                self.entities[label] = Entity("table", label,
+                                              table=load_table(path, label, self.index_dir, base_dir=self.base))
 
     def lookup(self, name):
         return self.entities.get(name)
@@ -223,96 +260,98 @@ class RecipeNamespace:
     def names(self):
         return list(self.entities)
 
-
-def recipe_settings(info):
-    s = Settings()
-    for k, v in info.settings.items():
-        s.session[k] = convert(k, v)
-    return s
-
-
-def compile_recipe(info, index_dir=None):
-    from .plugins import ensure
-
-    for ref in info.plugins.values():
-        ensure(ref)
-    ns = RecipeNamespace(info, index_dir)
-    settings = recipe_settings(info)
-    comp = Compiler(ns, settings)
-    node = comp.compile(lang.parse_expression(info.expr), name=info.y[0] if info.y else info.name)
-    where = lang.parse_where_text(info.where)
-    return node, comp, ns, settings, where
+    def resolver(self, kind, label):
+        ent = self.entities.get(label)
+        if ent is None:
+            raise GlueError(f"{self.info.name}: the tree uses {kind} {label!r}, which isn't in [recipe.inputs]")
+        return ent.table
 
 
-def entries_for(ent, mode):
+def build_tree(info):
+    """(root node, namespace, warnings) for a saved dataset or calc, from current table files."""
+    ns = RecipeNamespace(info)
+    if info.version == "0.1":
+        from .plugins import ensure
+
+        settings = Settings()
+        for k, v in info.settings.items():
+            settings.session[k] = convert(k, v)
+        el = Elaborator(ns, settings)
+        root = el.build(lang.parse_expression(info.expr))
+        if info.where:
+            root = N.filt(root, predicate_text([pred_from_selector(s) for s in lang.parse_where_text(info.where)]))
+        root = el.named(root, info.type.output_names[0] if info.type.outputs else info.name)
+        return root, ns, []
+    root, warnings = load_nodes(info.nodes, info.root, ns.resolver)
+    return root, ns, warnings
+
+
+# ------------------------------------------------------------------ saving
+
+
+def _entries_for(ent, mode, glue_dir, epochs):
     t = ent.table
     if ent.kind == "dataset":
-        return {os.path.basename(t.cache_file): [os.path.getsize(t.cache_file), 0, t.info.sha256]}
-    return t.chunk_entries(mode)
+        return {os.path.basename(t.cache_file): [os.path.getsize(t.cache_file), 0, t.info.sha256, ""]}
+    return t.chunk_entries(mode, salts(glue_dir, t.def_id, epochs))
 
 
-def input_digest(ent, entries, mode):
+def _digest_for(ent, entries, mode):
     if ent.kind == "dataset":
         return "sha256:" + ent.table.info.sha256[:16]
     return digest(entries, mode)
 
 
-def _key_list(k):
-    return [v for v in k]
+def _count_keys(frame, root):
+    part = [c for c in root.type.input_names if c in root.part]
+    if not part:
+        return 1 if len(frame) else 0
+    return len(frame[part].drop_duplicates())
 
 
-def _write_result(info, node, frame, keys, dropped, deps, ns, report_extra=None):
-    """Write cache and TOML for a finished run."""
-    entries = {name: entries_for(ent, info.fp_mode) for name, ent in ns.entities.items()}
-    info.fingerprints = {name: input_digest(ns.entities[name], entries[name], info.fp_mode) for name in entries}
-    chunks_meta = {
-        "coords": list(node.coords),
-        "inputs": entries,
-        "keys": [[_key_list(k), sorted([list(d) for d in deps.get(tuple(k), ())])] for k in keys],
-        "dropped": [[_key_list(k), sorted([list(d) for d in deps.get(tuple(k), ())])] for k in dropped],
-    }
-    info.sha256 = write_cache_file(info.cache_file, info.format, frame, chunks_meta)
-    info.rows = len(frame)
-    info.curves = len(keys)
-    info.dropped = len(dropped)
+def sort_frame(frame, ftype):
+    ins = [c for c in ftype.input_names if c in frame.columns]
+    if ins and len(frame):
+        return frame.sort_values(ins, kind="stable").reset_index(drop=True)
+    return frame.reset_index(drop=True)
+
+
+def _write(info, root, frame, entities, glue_dir):
+    frame = sort_frame(frame, root.type)
+    epochs = load_epochs(glue_dir)
+    entries = {label: _entries_for(ent, info.fp_mode, glue_dir, epochs) for label, ent in entities.items()}
+    info.fingerprints = {label: _digest_for(entities[label], e, info.fp_mode) for label, e in entries.items()}
+    info.nodes = dump_nodes(root)
+    info.root = root.id
+    info.type = root.type
+    info.sha256 = write_cache_file(info.cache_file, info.format, frame, {"inputs": entries})
+    info.points = len(frame)
+    info.curves = _count_keys(frame, root)
     info.created = dt.datetime.now(dt.timezone.utc)
     info.tool = f"glue {__version__}"
+    info.invalid = False
+    info.version = "0.2"
     info.write()
+
+
+def _relative_inputs(entities, where):
+    out = {}
+    for label, ent in entities.items():
+        out[label] = relpath(os.path.abspath(ent.table.path), where)
+    return out
 
 
 def save(session, name, path=None, where=(), grid=None, fmt=None, unit=None, recipe_only=False):
     ent = session.lookup(name)
     if ent is None:
         raise GlueError(f"unknown name {name!r}")
-    if ent.kind in ("table", "dataset"):
+    if ent.kind in ("table", "dataset", "calc"):
         raise GlueError(f"{name} is a {ent.kind}. save works on variables and views. "
                         + ("Use refresh to recompute a dataset." if ent.kind == "dataset" else ""))
-    if recipe_only:
-        return session.save_view(name)
-
-    expander = Expander(session)
-    expr_ast = expander.expand(ent.ast)
-    settings = session.settings
-    settings.push(ent.overrides or {})
-    if grid is not None:
-        settings.push({"grid": grid})
-    try:
-        eff = {k: settings.get(k) for k in RECIPE_KEYS}
-    finally:
-        if grid is not None:
-            settings.pop()
-        settings.pop()
-    if eff["grid"].kind == "like":
-        eff["grid"] = GridSpec("like", like=expander.expand(eff["grid"].like))
-        for n in lang.walk(eff["grid"].like):
-            if isinstance(n, lang.Name):
-                e2 = session.lookup(n.id)
-                if e2 is not None and e2.kind in ("table", "dataset"):
-                    expander.inputs[n.id] = e2
-
     base = session.project_dir or os.getcwd()
     if path is None:
-        path = os.path.join(session.settings.get("datasets_dir"), name)
+        folder = "calcs" if recipe_only else session.settings.get("datasets_dir")
+        path = os.path.join(folder, name)
     if not os.path.isabs(path):
         path = os.path.join(base, path)
     if path.endswith(".toml"):
@@ -321,59 +360,54 @@ def save(session, name, path=None, where=(), grid=None, fmt=None, unit=None, rec
     check_name(ds_name, "dataset name")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fmt = fmt or session.settings.get("cache_format")
-    toml_path = path + ".toml"
 
-    info = DatasetInfo(path=os.path.abspath(toml_path), name=ds_name)
-    missing = [n for n, e in expander.inputs.items() if not e.table.path]
-    if missing:
-        return _save_snapshot(session, ent, info, fmt, where, unit, grid)
-    info.expr = expr_ast.src()
-    info.source_expr = ent.ast.src() if ent.kind == "var" else name
-    info.where = ", ".join(s.src() for s in where)
-    info.inputs = {n: relpath(os.path.abspath(e.table.path), info.dir) for n, e in expander.inputs.items()}
-    info.settings = {k: to_text(k, v) for k, v in eff.items()}
-    info.plugins = {n: o.ref() for n, o in expander.plugins.items()}
+    el = Elaborator(session, session.settings)
+    session.settings.push({"grid": grid} if grid is not None else {})
+    try:
+        root = el.build(ent.ast, overrides=ent.overrides)
+    finally:
+        session.settings.pop()
+    if where:
+        root = N.filt(root, predicate_text([pred_from_selector(s) for s in where]))
+    root = el.named(root, ds_name, unit)
+
+    info = DatasetInfo(path=os.path.abspath(path + ".toml"), name=ds_name, kind="calc" if recipe_only else "dataset")
+    info.surface = ent.ast.src() if ent.kind == "var" else name
+    info.description = ent.description or ""
+    info.fp_mode = session.settings.get("fingerprint")
     info.cache_file = f"{path}.{fmt}"
     info.format = fmt
-    info.fp_mode = session.settings.get("fingerprint")
-    info.description = ent.description or ""
-
-    node, comp, ns, rs, where_sels = compile_recipe(info, session.index_dir)
-    ctx = E.Context(rs, comp.like_nodes)
-    frame, keys, dropped, deps = E.run(node, ctx, where_sels)
-    info.by = list(node.coords)
-    info.x = node.xname
-    info.y = [E.result_names(node)]
-    info.columns = {}
-    for c in node.coords:
-        info.columns[c] = ColumnMeta(type=node.ctype(c))
-    for t in ns.entities.values():
-        tab = t.table
-        if node.xname and tab.x == node.xname and node.xname not in info.columns:
-            info.columns[node.xname] = ColumnMeta(unit=tab.unit(node.xname), label=tab.m(node.xname).label)
-    info.columns[info.y[0]] = ColumnMeta(unit=unit if unit is not None else node.unit)
-    _write_result(info, node, frame, keys, dropped, deps, ns)
+    ctx = session.context()
+    missing = [label for label, e in el.inputs.items() if not e.table.path]
+    if missing:
+        if recipe_only:
+            raise GlueError(f"{name} uses {', '.join(missing)}, which came from Python and has no file, "
+                            "so it can't be saved as a calc")
+        return _save_snapshot(info, root, ctx)
+    info.inputs = _relative_inputs(el.inputs, info.dir)
+    if recipe_only:
+        info.nodes = dump_nodes(root)
+        info.root = root.id
+        info.type = root.type
+        info.created = dt.datetime.now(dt.timezone.utc)
+        info.tool = f"glue {__version__}"
+        info.write()
+        return info, ctx.report
+    frame = ctx.run(root)
+    _write(info, root, frame, el.inputs, session.glue_dir)
     return info, ctx.report
 
 
-def _save_snapshot(session, ent, info, fmt, where, unit, grid):
-    """Save data that depends on Python-registered tables: no recipe, can't be recomputed."""
-    node, comp = session.compile(lang.Name(ent.name), overrides={"grid": grid} if grid is not None else None)
-    frame, ctx, keys, dropped = session.evaluate(node, comp, where)
+def _save_snapshot(info, root, ctx):
+    frame = ctx.run(root)
     info.reproducible = False
-    info.by = list(node.coords)
-    info.x = node.xname
-    info.y = [E.result_names(node)]
-    if info.y[0] != info.name and info.y[0] in frame.columns:
-        frame = frame.rename(columns={info.y[0]: info.name})
-        info.y = [info.name]
-    info.columns = {c: ColumnMeta(type=node.ctype(c)) for c in node.coords}
-    info.columns[info.y[0]] = ColumnMeta(unit=unit if unit is not None else node.unit)
-    info.cache_file = os.path.splitext(info.path)[0] + f".{fmt}"
-    info.format = fmt
-    info.description = ent.description or "saved from Python data, no recipe"
-    info.sha256 = write_cache_file(info.cache_file, fmt, frame, {"coords": list(node.coords)})
-    info.rows, info.curves, info.dropped = len(frame), len(keys), len(dropped)
+    info.type = root.type
+    info.root = root.id
+    info.description = info.description or "saved from Python data, no recipe"
+    frame = sort_frame(frame, root.type)
+    info.sha256 = write_cache_file(info.cache_file, info.format, frame, {})
+    info.points = len(frame)
+    info.curves = _count_keys(frame, root)
     info.created = dt.datetime.now(dt.timezone.utc)
     info.tool = f"glue {__version__}"
     info.write()
@@ -388,8 +422,9 @@ def _save_snapshot(session, ent, info, fmt, where, unit, grid):
 class Status:
     state: str
     details: list = field(default_factory=list)
-    changed: dict = field(default_factory=dict)  # input -> set of changed rels
+    changed: dict = field(default_factory=dict)  # input label -> set of changed chunk paths
     pinned: bool = False
+    rebuild: bool = False                        # the tree itself changed, so recompute everything
 
 
 def status(info, index_dir=None, _seen=None):
@@ -401,6 +436,10 @@ def status(info, index_dir=None, _seen=None):
     if not info.reproducible:
         st.state = "no recipe"
         return st
+    if info.invalid:
+        st.state = "invalidated"
+        st.details.append("marked with invalidate")
+        return st
     if not os.path.exists(info.cache_file):
         st.state = "modified"
         st.details.append("cache file is missing")
@@ -409,55 +448,124 @@ def status(info, index_dir=None, _seen=None):
         st.state = "modified"
         st.details.append("cache file was changed after it was saved")
         return st
+    glue_dir, base = project_dirs(info.path)
+    epochs = load_epochs(glue_dir)
     _, meta = read_cache_file(info.cache_file, info.format)
     stored = meta.get("inputs", {})
-    for name in info.inputs:
-        path = info.input_path(name)
+    defs = {d.get("table"): d.get("def") for d in info.nodes.values() if d.get("op") == "source"}
+    for label in info.inputs:
+        path = info.input_path(label)
         if not os.path.exists(path):
             st.state = "orphaned"
-            st.details.append(f"input {name} not found: {relpath(path, os.getcwd())}")
+            st.details.append(f"input {label} not found: {relpath(path, os.getcwd())}")
             continue
         try:
             kind = read_toml(path).get("kind")
             if kind == "dataset":
-                sub = load_info(path, name)
+                sub = load_info(path, label)
                 sub_st = status(sub, index_dir, _seen)
-                if ("sha256:" + sub.sha256[:16]) != info.fingerprints.get(name):
-                    st.changed[name] = {"(dataset changed)"}
-                    st.details.append(f"{name}: dataset was recomputed")
-                elif sub_st.state == "stale":
-                    st.changed[name] = {"(dataset stale)"}
-                    st.details.append(f"{name}: depends on a stale dataset")
+                if ("sha256:" + sub.sha256[:16]) != info.fingerprints.get(label):
+                    st.changed[label] = {"(dataset changed)"}
+                    st.details.append(f"{label}: dataset was recomputed")
+                elif sub_st.state not in ("fresh", "no recipe"):
+                    st.changed[label] = {"(dataset stale)"}
+                    st.details.append(f"{label}: depends on a stale dataset")
                 continue
-            t = load_table(path, name, index_dir=index_dir)
-            cur = t.chunk_entries(info.fp_mode)
+            idx = os.path.join(glue_dir, "index") if glue_dir else None
+            t = load_table(path, label, idx, base_dir=base)
+            cur = t.chunk_entries(info.fp_mode, salts(glue_dir, t.def_id, epochs))
         except GlueError as e:
             st.state = "orphaned"
-            st.details.append(f"input {name}: {e}")
+            st.details.append(f"input {label}: {e}")
             continue
-        old = stored.get(name, {})
-        idx = 2 if info.fp_mode == "hash" else 1
+        if label in defs and defs[label] and defs[label] != t.def_id:
+            st.changed[label] = {"(definition changed)"}
+            st.rebuild = True
+            st.details.append(f"{label}: table definition changed")
+            continue
+        old = stored.get(label, {})
+        i = 2 if info.fp_mode == "hash" else 1
 
         def same(a, b):
-            return a[0] == b[0] and a[idx] == b[idx]
+            a, b = list(a) + [""] * 4, list(b) + [""] * 4
+            return a[0] == b[0] and a[i] == b[i] and (a[3] or "") == (b[3] or "")
 
         changed = {r for r in cur if r in old and not same(cur[r], old[r])}
         added = set(cur) - set(old)
         removed = set(old) - set(cur)
         if changed or added or removed:
-            st.changed[name] = changed | added | removed
-            parts = []
-            if changed:
-                parts.append(f"{len(changed)} changed")
-            if added:
-                parts.append(f"{len(added)} added")
-            if removed:
-                parts.append(f"{len(removed)} removed")
+            st.changed[label] = changed | added | removed
+            parts = [f"{len(v)} {w}" for v, w in ((changed, "changed"), (added, "added"), (removed, "removed")) if v]
             example = sorted(changed | added | removed)[0]
-            st.details.append(f"{name}: {', '.join(parts)} ({example}{', ...' if len(st.changed[name]) > 1 else ''})")
+            more = ", ..." if len(st.changed[label]) > 1 else ""
+            st.details.append(f"{label}: {', '.join(parts)} ({example}{more})")
     if st.state == "fresh" and st.changed:
         st.state = "stale"
+    if st.state == "fresh" and info.version == "0.1":
+        st.details.append("saved by glue 0.1. refresh rewrites it as a 0.2 tree")
     return st
+
+
+def trace(node, u):
+    """Leaves an input of `node` comes from: [(leaf node, leaf input name)]."""
+    if node.leaf:
+        return [(node, u)]
+    if not node.eval_children:
+        return trace(node.expanded, u)
+    out = []
+    for path, c in node.children():
+        m = node.map_in(path, u)
+        if m is not None and m in c.part:
+            out += trace(c, m)
+    return out
+
+
+def _chunk_coords(table, rel, index):
+    for ch in index:
+        if ch.rel == rel:
+            return ch.coords
+    if isinstance(table, GlobTable):
+        raw = table.template.match(rel)
+        return table._coords(raw) if raw else None
+    if isinstance(table, Hdf5Table) and "::" in rel:
+        raw = table.template.match(rel.split("::", 1)[1])
+        if raw:
+            c = {k: v for k, v in raw.items()}
+            from .util import normalize
+
+            c = {k: normalize(v, table.ctype(k), table.digits(k)) for k, v in c.items()}
+            c.update(table.constants)
+            return table.apply_path_transforms(c)
+    return None
+
+
+def _pred_sets(root, st, ns):
+    """For each changed chunk, the filter on root inputs that selects the curves it affects."""
+    part = [u for u in root.type.input_names if u in root.part]
+    if not part:
+        return None
+    traces = {u: trace(root, u) for u in part}
+    sets = {}
+    for label, rels in st.changed.items():
+        ent = ns.entities.get(label)
+        if ent is None or ent.kind != "table" or any(r.startswith("(") for r in rels):
+            return None
+        t = ent.table
+        index = t.index()
+        for rel in rels:
+            coords = _chunk_coords(t, rel, index)
+            if coords is None:
+                return None
+            preds = []
+            for u in part:
+                for leaf, v in traces[u]:
+                    if isinstance(leaf, N.SourceNode) and leaf.table.name == label and v in coords:
+                        preds.append(Pred(u, "=", coords[v]))
+                        break
+            if not preds:
+                return None
+            sets[tuple(p.src() for p in preds)] = preds
+    return list(sets.values())
 
 
 def refresh(info, full=False, force=False, index_dir=None, log=print, _done=None):
@@ -470,72 +578,56 @@ def refresh(info, full=False, force=False, index_dir=None, log=print, _done=None
         return info
     if not info.reproducible:
         raise GlueError(f"{info.name} has no recipe and can't be recomputed")
-    for name in info.inputs:
-        path = info.input_path(name)
+    for label in info.inputs:
+        path = info.input_path(label)
         if os.path.exists(path) and read_toml(path).get("kind") == "dataset":
-            sub = load_info(path, name)
-            if status(sub, index_dir).state in ("stale", "modified"):
+            sub = load_info(path, label)
+            if status(sub, index_dir).state in ("stale", "modified", "invalidated"):
                 refresh(sub, full=full, force=force, index_dir=index_dir, log=log, _done=_done)
     st = status(info, index_dir)
     if st.state == "orphaned":
         raise GlueError(f"{info.name} can't be recomputed: " + "; ".join(st.details))
-    if st.state == "fresh" and not full:
+    if st.state == "fresh" and not full and info.version != "0.1":
         log(f"{info.name}: fresh, nothing to do")
         return info
-    full = full or st.state == "modified"
-
-    node, comp, ns, rs, where = compile_recipe(info, index_dir)
-    ctx = E.Context(rs, comp.like_nodes)
-    coord_sels, _ = E.check_where(node, where)
-    plan = ctx.keys(node, coord_sels)
-    if full:
-        frame, keys, dropped, deps = E.run(node, ctx, where, keys=plan)
-        _write_result(info, node, frame, keys, dropped, deps, ns)
-        log(f"{info.name}: recomputed all {len(keys)} curves")
-        return info
-
-    old_frame, meta = read_cache_file(info.cache_file, info.format)
-    old_deps = {tuple(k): {tuple(d) for d in ds} for k, ds in meta.get("keys", [])}
-    old_dropped = {tuple(k): {tuple(d) for d in ds} for k, ds in meta.get("dropped", [])}
-    known = {**old_deps, **old_dropped}
-    changed = {(name, r) for name, rels in st.changed.items() for r in rels}
-    changed_inputs = {name for name, rels in st.changed.items() if any(r.startswith("(") for r in rels)}
-
-    def dirty(k):
-        if k not in known:
-            return True
-        ds = known[k]
-        return bool(ds & changed) or any(d[0] in changed_inputs for d in ds)
-
-    todo = [k for k in plan if dirty(k)]
-    keep = [k for k in plan if not dirty(k) and k in old_deps]
-    new_frame, new_keys, new_dropped, new_deps = E.run(node, ctx, where, keys=todo)
-    coords = list(node.coords)
-    keep_set = set(keep)
-    if coords and len(old_frame):
-        tuples = [tuple(E._py_key(v) for v in row) for row in old_frame[coords].itertuples(index=False, name=None)]
-        mask = np.array([t in keep_set for t in tuples], dtype=bool)
-        kept = old_frame[mask]
+    root, ns, warnings = build_tree(info)
+    for old, new, op in warnings:
+        log(f"{info.name}: node {old} ({op}) was edited or its source changed; its id is now {new}")
+    glue_dir, _ = project_dirs(info.path)
+    ctx = Context(Store(), glue_dir, info.fp_mode)
+    full = (full or st.state in ("modified", "invalidated") or st.rebuild or info.version == "0.1"
+            or root.id != info.root)
+    sets = None if full else _pred_sets(root, st, ns)
+    if sets is None:
+        frame = ctx.run(root)
+        _write(info, root, frame, ns.entities, glue_dir)
+        log(f"{info.name}: recomputed all {info.curves} {_unit_word(root)}")
     else:
-        kept = old_frame if keep else old_frame.iloc[0:0]
-    frame = pd.concat([kept, new_frame], ignore_index=True) if len(new_frame) else kept.reset_index(drop=True)
-    if coords and len(frame):
-        order = {k: i for i, k in enumerate(plan)}
-        frame["__o"] = [order.get(tuple(E._py_key(v) for v in row), 1 << 30)
-                        for row in frame[coords].itertuples(index=False, name=None)]
-        frame = frame.sort_values("__o", kind="stable").drop(columns="__o").reset_index(drop=True)
-    all_keys = [k for k in plan if k in keep_set or k in set(new_keys)]
-    deps = {k: old_deps[k] for k in keep}
-    deps.update(new_deps)
-    dropped_all = [k for k in plan if k in set(new_dropped) or (k in old_dropped and not dirty(k))]
-    for k in dropped_all:
-        deps.setdefault(k, old_dropped.get(k, set()))
-    _write_result(info, node, frame, all_keys, dropped_all, deps, ns)
-    removed = len([k for k in old_deps if k not in set(plan)])
-    msg = f"{info.name}: recomputed {len(todo)} of {len(plan)} curves, {len(keep)} unchanged"
-    if removed:
-        msg += f", {removed} removed"
-    log(msg)
+        old, _ = read_cache_file(info.cache_file, info.format)
+        drop = np.zeros(len(old), dtype=bool)
+        new_frames = []
+        for preds in sets:
+            m = np.ones(len(old), dtype=bool)
+            if len(old):
+                sub = apply_preds(preds, old.assign(__i=np.arange(len(old))))
+                m = np.isin(np.arange(len(old)), sub["__i"].to_numpy())
+            drop |= m
+            new_frames.append(ctx.run(root, preds))
+        frame = pd.concat([old[~drop]] + new_frames, ignore_index=True)
+        _write(info, root, frame, ns.entities, glue_dir)
+        k = len(sets)
+        log(f"{info.name}: recomputed {k} of {info.curves} {_unit_word(root)}, {max(info.curves - k, 0)} unchanged")
     for line in ctx.report.lines():
         log("  " + line)
     return info
+
+
+def _unit_word(root):
+    part = [u for u in root.type.input_names if u in root.part]
+    ragged = [u for u in root.type.input_names if u not in root.part]
+    return "curves" if part and ragged else "keys"
+
+
+def invalidate(info):
+    info.invalid = True
+    info.write()
