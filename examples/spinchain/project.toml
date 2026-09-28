@@ -1,0 +1,32 @@
+glue = "0.2"
+kind = "project"
+name = "spinchain"
+description = "Thermodynamics of the spin-1/2 XXZ chain from exact diagonalization, FTLM, and the exact XX solution"
+
+[tables]
+ed    = "tables/ed.toml"
+ftlm  = "tables/ftlm.toml"
+gap   = "tables/gap.toml"
+exact = "tables/exact.toml"
+
+[settings]
+method = "pchip"
+grid = "overlap(n=200)"
+fingerprint = "hash"
+
+[plot]
+cmap = "viridis"
+
+[plugins]
+modules = ["fits"]
+path = ["ops"]
+
+[datasets]
+Tpeak = "results/Tpeak.toml"
+Einf = "results/Einf.toml"
+
+[views]
+dX = "ed.E - exact.E"
+
+[calcs]
+gap_inf = "calcs/gap_inf.toml"

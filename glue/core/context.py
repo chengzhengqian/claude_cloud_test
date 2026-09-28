@@ -109,6 +109,10 @@ class Context:
         sets = pred_sets(node, changed)
         if sets is None:
             return None
+        # changed curves that this value's own filters exclude don't matter here
+        sets = [ps for ps in sets if _may_match(ps, sels)]
+        if not sets:
+            return old
         drop = np.zeros(len(old), dtype=bool)
         if len(old):
             idx = old.assign(__i=np.arange(len(old)))
@@ -171,3 +175,10 @@ class Context:
 
         go(root, push)
         return reads, push
+
+
+def _may_match(preds, sels):
+    """Can points with these exact values (preds are equalities) pass the filters in sels?"""
+    row = pd.DataFrame([{p.name: p.value for p in preds}])
+    usable = [p for p in sels if p.literal and p.name in row.columns]
+    return len(F.apply_preds(usable, row)) > 0

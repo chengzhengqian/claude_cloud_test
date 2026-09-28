@@ -1,0 +1,98 @@
+glue = "0.2"
+kind = "dataset"
+name = "Einf"
+created = 2026-09-28T02:18:33Z
+tool = "glue 0.2.0"
+pinned = false
+description = ""
+
+[type]
+inputs = ["Delta", "h", "T"]
+outputs = ["Einf"]
+exact = ["Delta", "h", "T"]
+axis = "T"
+units = { h = "J", T = "J" }
+
+[recipe]
+lib = "glue-core 1"
+surface = "intercept(transform(Eg, L, x=1 / L^2), x)"
+root = "f7a4525c59b7"
+
+[recipe.inputs]
+ed = "../tables/ed.toml"
+
+[recipe.nodes.fae5faf81f75]
+op = "source"
+def = "13c91b25e926"
+duplicates = "first"
+digits = { Delta = 10, h = 10, T = 10 }
+table = "ed"
+name = "ed"
+
+[recipe.nodes.87e1e1c077f4]
+op = "select"
+of = "fae5faf81f75"
+outputs = ["E"]
+name = "ed.E"
+
+[recipe.nodes.0832804e50f1]
+op = "axis"
+input = "T"
+values = "log:0.1:3.0:60"
+name = "logspace(0.1, 3.0, 60)"
+
+[recipe.nodes.51fca9007ee2]
+op = "resample"
+of = "87e1e1c077f4"
+grid = "0832804e50f1"
+along = "T"
+method = "pchip"
+extrapolate = "nan"
+fewpoints = "linear"
+name = "resample(ed.E, grid=logspace(0.1, 3.0, 60))"
+
+[recipe.nodes.e4b7eb434aec]
+op = "rename"
+of = "51fca9007ee2"
+mapping = { E = "Eg" }
+name = "Eg"
+
+[recipe.nodes.cad55807ef72]
+op = "transform"
+of = "e4b7eb434aec"
+input = "L"
+to = "x"
+formula = "1 / L^2"
+name = "transform(Eg, L, x=1 / L^2)"
+
+[recipe.nodes.535f5aaa639c]
+op = "apply"
+of = "cad55807ef72"
+fn = "fits:intercept@1"
+kind = "reduce"
+along = "x"
+params = {  }
+
+[recipe.nodes.1244c77d3d3f]
+op = "rename"
+of = "535f5aaa639c"
+mapping = { Eg = "value" }
+name = "intercept(transform(Eg, L, x=1 / L^2), x)"
+
+[recipe.nodes.f7a4525c59b7]
+op = "rename"
+of = "1244c77d3d3f"
+mapping = { value = "Einf" }
+name = "Einf"
+
+[cache]
+file = "Einf.parquet"
+format = "parquet"
+sha256 = "9230c1ebf24be7d8d063a1b013713c2b183f3880cc4ece48ebedde4c179e9fa2"
+points = 480
+curves = 8
+dropped = 0
+
+[fingerprint]
+mode = "hash"
+ed = "sha256:a5581b2ac243c8fb"

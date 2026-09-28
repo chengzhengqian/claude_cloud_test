@@ -683,6 +683,26 @@ class JoinNode(Node):
             key = [k for k in inputs if k != n.type.axis]
             keys = lost[key].drop_duplicates() if key else lost.iloc[:1]
             text = n.label()
+            if key and n.type.axis:
+                # a key that every other operand has only lost some points along the axis
+                k = keys.assign(_merge="both")
+                for other, on in ops.items():
+                    if other == label:
+                        continue
+                    common = [c for c in key if on.type.has_input(c)]
+                    if not common:
+                        continue
+                    have = frames[other][common].drop_duplicates().assign(_have=True)
+                    k = k.merge(have, on=common, how="left")
+                    k["_merge"] = np.where(k["_have"].eq(True) & k["_merge"].eq("both"), "both", "left_only")
+                    k = k.drop(columns="_have")
+                partial = k[k["_merge"] == "both"][key]
+                if len(partial):
+                    pts = lost.merge(partial, on=key)
+                    ctx.report.count(f"dropped {{n}} points of {text} with no matching {n.type.axis}", len(pts))
+                keys = k[k["_merge"] == "left_only"][key]
+                if not len(keys):
+                    continue
             if self.params["unmatched"] == "error":
                 row = keys.iloc[0]
                 raise GlueError(f"{len(keys)} curve keys have no match, for example "
@@ -1090,7 +1110,14 @@ class ReduceNode(AlongNode):
         if op not in REDUCE_OPS:
             raise GlueError(f"reduce: unknown op {op!r}. Use {', '.join(REDUCE_OPS)}")
         keep_unit = op in ("max", "min", "mean", "sum", "first", "last")
-        outs = [Out(o.name, o.unit if keep_unit else "", o.label) for o in t.outputs]
+        if op in ("argmax", "argmin"):
+            # the value is a position along the input, so it takes that input's unit, not the output's label
+            v = t.var(self.params["along"])
+            outs = [Out(o.name, v.unit, "") for o in t.outputs]
+        elif op == "count":
+            outs = [Out(o.name, "", "") for o in t.outputs]
+        else:
+            outs = [Out(o.name, o.unit, o.label) if keep_unit else Out(o.name, "", "") for o in t.outputs]
         return t.without_input(self.params["along"]).with_outputs(outs)
 
     def compute(self, ctx, ins, sels):

@@ -137,3 +137,9 @@ def test_load_as_names_a_table_and_prefixes_a_project(sh, proj):
                                         .replace('"b.toml"', '"../b.toml"').replace('"g.toml"', '"../g.toml"'))
     run(sh, "load other/project.toml as old")
     assert "old_a" in sh.session.tables
+
+
+def test_open_range_before_limit(sh):
+    out = run(sh, "a.E where U=1.0, n=0.5, T=0.9: limit 2")
+    assert "error" not in out and "more rows" not in out.split("\n")[0]
+    assert len([line for line in out.splitlines() if line.strip().startswith("1.0")]) == 2

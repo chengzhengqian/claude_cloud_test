@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import dataclasses
 import os
 import sys
 
@@ -11,7 +12,7 @@ import pandas as pd
 from . import dataset as D
 from . import lang
 from .core import nodes as N
-from .core.context import Context
+from .core.context import Context, EXPENSIVE
 from .core.formula import pred_from_selector
 from .core.store import Store, bump
 from .core.tree import render
@@ -418,7 +419,7 @@ class Session:
                 names = node.type.input_names + node.type.output_names
                 raise GlueError(f"where {p.src()}: {node.name or 'the result'} has no input {p.name} "
                                 f"(it has {', '.join(names) or 'none'})")
-        return preds
+        return [_int_values(p, node.type) for p in preds]
 
     def evaluate(self, node, comp=None, where=(), limit=None, keys=None):
         preds = self.where_preds(node, where)
@@ -724,7 +725,7 @@ class Session:
         for kind, name, root in self.named_roots():
             fresh, stale = [], []
             for n in root.walk():
-                if n.leaf or (n.id not in on_disk and n.id not in in_mem):
+                if n.leaf or n.op not in EXPENSIVE or (n.id not in on_disk and n.id not in in_mem):
                     continue
                 fp = ctx.fp(n)
                 ok = fp in in_mem.get(n.id, ()) or fp[:12] in on_disk.get(n.id, ())
@@ -813,13 +814,13 @@ class Session:
             t = ent.table
             lines = [f"{ent.kind} {name}: {describe_source(t)}"]
             if t.description:
-                lines.append(f"  {t.description}")
+                lines += [f"  {line.strip()}" for line in t.description.strip().splitlines()]
             lines.append(f"  type       {t.ftype().text()}")
             chunks = t.index()
             if t.locator_coords or t.constants:
-                lines.append(f"  {len(chunks)} files")
+                lines.append(f"  {_count(len(chunks), 'file')}")
             ks = t.keys([])
-            lines.append(f"  {len(ks)} {'curves' if t.x else 'keys'}")
+            lines.append(f"  {_count(len(ks), 'curve' if t.x else 'key')}")
             for c in t.inputs:
                 if c == t.x:
                     continue
@@ -827,19 +828,22 @@ class Session:
                 if isinstance(t, CacheTable):
                     vals = sorted(t.frame()[c].unique().tolist(), key=lambda v: (isinstance(v, str), v))
                     shown = ", ".join(str(v) for v in vals[:8]) + (", ..." if len(vals) > 8 else "")
-                    lines.append(f"  input      {c:8} {len(vals):3} values: {shown}")
+                    lines.append(f"  input      {c:8} {len(vals):3} {'value ' if len(vals) == 1 else 'values'}: {shown}")
                 elif src != "content":
                     vals = sorted({ch.coords[c] for ch in chunks}, key=lambda v: (isinstance(v, str), v))
                     shown = ", ".join(str(v) for v in vals[:8]) + (", ..." if len(vals) > 8 else "")
-                    lines.append(f"  input      {c:8} {len(vals):3} values: {shown}  ({src})")
+                    lines.append(f"  input      {c:8} {len(vals):3} {'value ' if len(vals) == 1 else 'values'}: {shown}  ({src})")
                 else:
                     i = t.coords.index(c)
                     vals = sorted({k[i] for k in ks}, key=lambda v: (isinstance(v, str), v))
                     shown = ", ".join(str(v) for v in vals[:8]) + (", ..." if len(vals) > 8 else "")
-                    lines.append(f"  input      {c:8} {len(vals):3} values: {shown}  ({src})")
+                    lines.append(f"  input      {c:8} {len(vals):3} {'value ' if len(vals) == 1 else 'values'}: {shown}  ({src})")
             if t.x:
                 lines.append(f"  axis       {t.x}{_unit(t, t.x)}")
+            errors = {t.m(v).error for v in t.output_names() if t.m(v).error}
             for v in t.output_names():
+                if v in errors:
+                    continue
                 err = f", error {t.m(v).error}" if t.m(v).error else ""
                 lines.append(f"  output     {v}{_unit(t, v)}{err}")
             if ent.kind == "dataset":
@@ -907,3 +911,20 @@ def write_blocks(frame, coords, path):
             first = False
             f.write("# " + ", ".join(f"{c}={v}" for c, v in zip(coords, key)) + "\n")
             g[other].to_csv(f, sep=" ", header=False, index=False)
+
+
+def _count(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _int_values(pred, ftype):
+    """Show filters on int inputs with int values: L=12, not L=12.0."""
+    v = ftype.var(pred.name)
+    if v is None or v.dtype != "int":
+        return pred
+
+    def fix(x):
+        return int(x) if isinstance(x, float) and x.is_integer() else x
+
+    value = tuple(fix(x) for x in pred.value) if isinstance(pred.value, tuple) else fix(pred.value)
+    return dataclasses.replace(pred, value=value, lo=fix(pred.lo), hi=fix(pred.hi))

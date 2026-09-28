@@ -18,6 +18,7 @@ than replacing them.
 
 | Document | What's in it |
 |---|---|
+| [examples/spinchain/TUTORIAL.md](examples/spinchain/TUTORIAL.md) | **Start here:** a step-by-step tutorial on real spin-chain data, covering every part of glue, with figures |
 | [docs/reference.md](docs/reference.md) | How to use it: files, expressions, commands, settings, Python |
 | [docs/spec.md](docs/spec.md) | The specification |
 | [docs/core.md](docs/core.md) | The core calculus: fields, operations, saved trees, caching |
@@ -94,6 +95,8 @@ df2 = (s.dmft.E - s.ed.E).to_pandas(where="U=2.0", method="cubic", duplicates="m
 - `glue/`: the rest. `sources.py` (files, SQLite, HDF5, caches), `lang.py`
   (parser), `elaborate.py` (expressions to core trees), `dataset.py`
   (datasets, calcs, status, refresh), `plotting.py`, `shell.py`, `cli.py`
+- `examples/spinchain/`: the tutorial. Exact diagonalization, Lanczos, and exact results for a
+  spin chain, in text files, SQLite, HDF5, and CSV
 - `examples/hubbard/`: a realistic sweep with four sources, an analysis
   script, figures, and saved datasets
 - `tests/`: `python -m pytest`

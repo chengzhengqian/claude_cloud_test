@@ -148,6 +148,8 @@ class Elaborator:
         if isinstance(a, lang.Call):
             if a.func in ELEMENTWISE:
                 return self._arith(a)
+            if a.func in ("min", "max") and len(a.args) == 2 and not a.kwargs and not self._is_reduction(a):
+                return self._arith(a)            # the pointwise maximum of two fields
             return self._call(a)
         if isinstance(a, (lang.ListLit, lang.TupleLit)):
             raise GlueError(f"a list like {a.src()} can only be used as an argument")
@@ -204,7 +206,8 @@ class Elaborator:
                 if len(x.args) != 1 or x.kwargs:
                     raise GlueError(f"{x.func} takes one argument")
                 return lang.Call(x.func, [term(x.args[0])])
-            if isinstance(x, lang.Call) and x.func in ("min", "max") and len(x.args) == 2 and not x.kwargs:
+            if isinstance(x, lang.Call) and x.func in ("min", "max") and len(x.args) == 2 and not x.kwargs \
+                    and not self._is_reduction(x):
                 return lang.Call(x.func, [term(x.args[0]), term(x.args[1])])
             if isinstance(x, lang.Name):
                 ent = self.entity(x.id)
@@ -215,6 +218,16 @@ class Elaborator:
             return field_term(self.el(x), x.src())
 
         return term(a), bare, entity_names
+
+    def _is_reduction(self, call):
+        """max(y, n) with n an input of y reduces along n. Otherwise max(a, b) is the pointwise maximum."""
+        arg = call.args[1]
+        if not isinstance(arg, lang.Name) or self.entity(arg.id) is not None:
+            return False
+        try:
+            return self.el(call.args[0]).type.has_input(arg.id)
+        except GlueError:
+            return False
 
     def _check_names(self, nodes, bare, entity_names):
         all_inputs = set()
@@ -515,10 +528,14 @@ class Elaborator:
                 "flat_tol": float(self._opt(kw, "flat_tol", "flat_tol"))}, text)
         if f in PLUGINS:
             opdef = PLUGINS[f]
-            if len(args) != 1:
-                raise GlueError(f"{f} takes one field plus options")
-            y = self.el(args[0])
             kind = {"elementwise": "pointwise"}.get(opdef.kind, opdef.kind)
+            if len(args) == 2 and kind != "pointwise" and isinstance(args[1], lang.Name) and "along" not in kw:
+                kw["along"] = args[1]            # f(y, x), like max(y, n)
+                args = args[:1]
+            if len(args) != 1:
+                raise GlueError(f"{f} takes one field plus options" +
+                                ("" if kind == "pointwise" else ", and optionally the input to work along"))
+            y = self.el(args[0])
             along = "-"
             if kind != "pointwise":
                 along = self._axis_of(y, kw.pop("along", None), f)
@@ -559,7 +576,8 @@ class Elaborator:
                                           "extrapolate": self.s("extrapolate"), "fewpoints": self.s("fewpoints")},
                               text)
         if isinstance(value, lang.ListLit) and all(isinstance(i, lang.Num) for i in value.items):
-            grid = N.axis(xname, "list:[" + ", ".join(repr(float(i.value)) for i in value.items) + "]")
+            grid = N.axis(xname, "list:[" + ", ".join(repr(float(i.value)) for i in value.items) + "]",
+                          name=f"points({value.src()})")
             return N.resample(y, grid, xname, _method_text(self.s("method")), self.s("extrapolate"),
                               self.s("fewpoints"), name=text)
         raise GlueError(f"@ {xname}= needs a number or a list of numbers")

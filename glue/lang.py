@@ -546,9 +546,9 @@ class Parser:
         return Selector(name, op, value=value)
 
     def _range_end(self):
+        """An open range like T=0.1: ends at anything that can't start a number, such as `limit`."""
         tok = self.peek()
-        return tok.kind == "EOF" or (tok.kind == "OP" and tok.value in (",", "]")) or (
-            tok.kind == "NAME" and tok.value in KEYWORDS)
+        return not (tok.kind == "NUMBER" or (tok.kind == "OP" and tok.value in ("-", "+")))
 
     def parse_selectors(self):
         sels = [self.parse_selector()]

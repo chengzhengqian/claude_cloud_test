@@ -1317,7 +1317,7 @@ loaded project hubbard: 2 tables, 1 view
 
 > plot dE by J where n=1.0
   error: input U not fixed. Curves for different values would overlap.
-  Add U to where, or use: by J, U
+  Fix U in where, or use: by J, U
 
 > explain plot dE by U where J=0.1, n=1.0
   dE = rename(mapping={value: dE})  [U, J, n, T:ragged → dE]

@@ -1,0 +1,42 @@
+glue = "0.2"
+kind = "table"
+description = """Finite-temperature Lanczos for L = 16 and 18 at h = 0. This code has its own
+conventions: it calls Delta jz, stores beta = 1/T, and writes energies for the whole chain.
+The [field] sections below turn that into the same names and units as the ED table."""
+
+[source]
+locator = "sqlite"
+file = "../data/ftlm.db"
+query = "SELECT L, jz AS Delta, beta, e_tot, e_err, cv_tot, cv_err FROM ftlm"
+constants = { h = 0.0 }
+
+[field]
+inputs = ["L", "Delta", "h", "T"]
+outputs = ["E", "C"]
+axis = "T"
+
+[field.transform]
+T = { from = "beta", formula = "1 / beta" }
+
+[field.map]
+E = "e_tot / L"
+dE = "e_err / L"
+C = "cv_tot / L"
+dC = "cv_err / L"
+
+[columns.L]
+type = "int"
+label = "chain length"
+
+[columns.T]
+unit = "J"
+label = "temperature"
+
+[columns.E]
+unit = "J"
+label = "energy per site"
+error = "dE"
+
+[columns.C]
+label = "specific heat per site"
+error = "dC"

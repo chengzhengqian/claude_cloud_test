@@ -1,0 +1,45 @@
+glue = "0.2"
+kind = "table"
+description = "Full exact diagonalization of periodic XXZ chains, L = 8 to 14. One file per run."
+
+[source]
+locator = "glob"
+root = "../data/ed"
+pattern = "L_{L:int}/Delta_{Delta}/h_{h}.dat"
+
+[source.reader]
+format = "text"
+columns = ["T", "E", "C", "M", "chi"]
+
+[field]
+inputs = ["L", "Delta", "h", "T"]
+outputs = ["E", "C", "M", "chi"]
+axis = "T"
+
+[columns.L]
+label = "chain length"
+
+[columns.Delta]
+label = "anisotropy"
+
+[columns.h]
+unit = "J"
+label = "field"
+
+[columns.T]
+unit = "J"
+label = "temperature"
+
+[columns.E]
+unit = "J"
+label = "energy per site"
+
+[columns.C]
+label = "specific heat per site"
+
+[columns.M]
+label = "magnetization per site"
+
+[columns.chi]
+unit = "1/J"
+label = "susceptibility per site"

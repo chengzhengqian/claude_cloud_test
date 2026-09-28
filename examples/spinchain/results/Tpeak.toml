@@ -1,0 +1,75 @@
+glue = "0.2"
+kind = "dataset"
+name = "Tpeak"
+created = 2026-09-28T02:18:32Z
+tool = "glue 0.2.0"
+pinned = false
+description = ""
+
+[type]
+inputs = ["L", "Delta", "h"]
+outputs = ["Tpeak"]
+exact = ["L", "Delta", "h"]
+dtypes = { L = "int" }
+units = { h = "J", Tpeak = "J" }
+
+[recipe]
+lib = "glue-core 1"
+surface = "argmax(ed.C)"
+root = "f3cc3e5714b6"
+
+[recipe.inputs]
+ed = "../tables/ed.toml"
+
+[recipe.nodes.fae5faf81f75]
+op = "source"
+def = "13c91b25e926"
+duplicates = "first"
+table = "ed"
+name = "ed"
+
+[recipe.nodes.fae5faf81f75.digits]
+Delta = 10
+h = 10
+T = 10
+
+[recipe.nodes.2d2ec33a9829]
+op = "select"
+of = "fae5faf81f75"
+outputs = ["C"]
+name = "ed.C"
+
+[recipe.nodes.d90027ea4f5d]
+op = "reduce"
+of = "2d2ec33a9829"
+along = "T"
+reduce = "argmax"
+method = "-"
+
+[recipe.nodes.0017c18b0c17]
+op = "rename"
+of = "d90027ea4f5d"
+name = "argmax(ed.C)"
+
+[recipe.nodes.0017c18b0c17.mapping]
+C = "value"
+
+[recipe.nodes.f3cc3e5714b6]
+op = "rename"
+of = "0017c18b0c17"
+name = "Tpeak"
+
+[recipe.nodes.f3cc3e5714b6.mapping]
+value = "Tpeak"
+
+[cache]
+file = "Tpeak.parquet"
+format = "parquet"
+sha256 = "a213a2efefd0ad3569f312c7a1b13b164016a7ebc0ae1f67c6270bed61fdcc28"
+points = 31
+curves = 31
+dropped = 0
+
+[fingerprint]
+mode = "hash"
+ed = "sha256:0541fd3868fdcf0e"

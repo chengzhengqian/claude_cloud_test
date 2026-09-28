@@ -947,7 +947,8 @@ Options are passed to the function as keyword arguments, as numbers or
 strings. For `def peak_width(x, y, level=0.5)`, write
 `peak_width(C, level=0.25)`. Put the
 module in the project's `[plugins]`, or register it in Python before use.
-`curve` and `reduce` work along the axis, or along `along=NAME`. A saved
+`curve` and `reduce` work along the axis, or along another input named as a second argument,
+like the built-in reductions: `intercept(y, x)` or `intercept(y, along=x)`. A saved
 dataset records `module:qualname@version`, as in `physops:fwhm@1`, and
 `refresh` imports that module again.
 

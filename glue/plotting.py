@@ -227,8 +227,11 @@ def plot(session, spec, log=print):
         free = []
     if free:
         more = ", ".join(free)
+        hint = f"Fix {more} in where"
+        if len(by + free) <= 2:
+            hint += f", or use: by {', '.join(by + free)}"
         raise GlueError(f"input{'s' if len(free) > 1 else ''} {more} not fixed. Curves for different values "
-                        f"would overlap. Add {free[0]} to where, or use: by {', '.join(by + free)}")
+                        f"would overlap. {hint}")
     if len(by) > 2:
         raise GlueError("by takes at most two inputs (color and line style)")
     if len(by) == 2 and len(series) > 1:
@@ -322,19 +325,21 @@ def _matplotlib(session, spec, series, kind, xname, by, fixed, opts, log):
                             marker=marker or "o", ms=3.5, capsize=2, elinewidth=0.9)
             else:
                 ax.plot(x, y, color=c, ls=ls if lw else "none", lw=lw, marker=marker, ms=3.5)
-        if len(series) > 1 or spec.add:
-            hc = "0.15" if color_by else matplotlib.colormaps["tab10"]((state["series"] + si) % 10)
-            if s.err is not None and not any(k == "style" for k, _ in spec.options):
-                handle = Line2D([], [], color=hc, ls="none", marker="o", ms=4)
-            else:
-                handle = Line2D([], [], color=hc, ls=ls_series, lw=1.6,
-                                marker=MARKERS[si % len(MARKERS)] if kind == "keyed" else None)
-            state["handles"].append(handle)
-            state["labels"].append(s.label)
+        # every series gets a legend entry; it's shown once there are two, so `plot +` can add to it
+        hc = "0.15" if color_by else matplotlib.colormaps["tab10"]((state["series"] + si) % 10)
+        if s.err is not None and not any(k == "style" for k, _ in spec.options):
+            handle = Line2D([], [], color=hc, ls="none", marker="o", ms=4)
+        else:
+            handle = Line2D([], [], color=hc, ls=ls_series, lw=1.6,
+                            marker=MARKERS[si % len(MARKERS)] if kind == "keyed" else None)
+        state["handles"].append(handle)
+        state["labels"].append(s.label)
     state["series"] += len(series)
 
     legend = opts.get("legend", "auto")
-    handles, labels = list(state["handles"]), list(state["labels"])
+    several = len(state["handles"]) > 1
+    handles = list(state["handles"]) if several else []
+    labels = list(state["labels"]) if several else []
     use_colorbar = numeric and len(cvals) > 1 and (legend == "colorbar" or (legend == "auto" and len(cvals) > 6))
     if color_by and legend != "off":
         if use_colorbar and not state["colorbar"]:

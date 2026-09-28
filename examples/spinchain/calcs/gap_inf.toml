@@ -1,0 +1,61 @@
+glue = "0.2"
+kind = "calc"
+name = "gap_inf"
+created = 2026-09-28T02:18:31Z
+tool = "glue 0.2.0"
+description = ""
+
+[type]
+inputs = ["Delta"]
+outputs = ["gap_inf"]
+exact = ["Delta"]
+
+[recipe]
+lib = "glue-core 1"
+surface = "intercept(transform(gap.gap, L, x=1 / L), x, deg=2)"
+root = "1f4e28e08c73"
+
+[recipe.inputs]
+gap = "../tables/gap.toml"
+
+[recipe.nodes.3ca94862608a]
+op = "source"
+def = "0a9273430b14"
+duplicates = "first"
+digits = { Delta = 10 }
+table = "gap"
+name = "gap"
+
+[recipe.nodes.562f692c9cff]
+op = "select"
+of = "3ca94862608a"
+outputs = ["gap"]
+name = "gap.gap"
+
+[recipe.nodes.a6c03ccf6e4f]
+op = "transform"
+of = "562f692c9cff"
+input = "L"
+to = "x"
+formula = "1 / L"
+name = "transform(gap.gap, L, x=1 / L)"
+
+[recipe.nodes.40ad0a3b1f7f]
+op = "apply"
+of = "a6c03ccf6e4f"
+fn = "fits:intercept@1"
+kind = "reduce"
+along = "x"
+params = { deg = 2.0 }
+
+[recipe.nodes.cae0147fcd7d]
+op = "rename"
+of = "40ad0a3b1f7f"
+mapping = { gap = "value" }
+name = "intercept(transform(gap.gap, L, x=1 / L), x, deg=2)"
+
+[recipe.nodes.1f4e28e08c73]
+op = "rename"
+of = "cae0147fcd7d"
+mapping = { value = "gap_inf" }
+name = "gap_inf"

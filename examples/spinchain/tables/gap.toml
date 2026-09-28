@@ -1,0 +1,25 @@
+glue = "0.2"
+kind = "table"
+description = "Spin gap E0(Sz=1) - E0(Sz=0) and ground-state energy per site, from Lanczos. One HDF5 group per run."
+
+[source]
+locator = "hdf5"
+file = "../data/gap.h5"
+pattern = "L_{L:int}/Delta_{Delta}"
+
+[source.reader]
+format = "dataset"
+dataset = "data"
+columns = ["gap", "e0"]
+
+[field]
+inputs = ["L", "Delta"]
+outputs = ["gap", "e0"]
+
+[columns.gap]
+unit = "J"
+label = "spin gap"
+
+[columns.e0]
+unit = "J"
+label = "ground-state energy per site"

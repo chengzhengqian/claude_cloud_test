@@ -546,7 +546,22 @@ class Shell:
     def cmd_help(self, p, flags, text):
         topic = "" if p.at_end() else p.expect_name()
         if topic not in HELP:
-            raise GlueError(f"no help for {topic!r}. Topics: {', '.join(k for k in HELP if k)}")
+            from .plugins import REGISTRY
+
+            if topic in REGISTRY:
+                op = REGISTRY[topic]
+                self.out(f"{topic}   custom {op.kind} operation, {op.ref()}")
+                for line in (op.fn.__doc__ or "").strip().splitlines():
+                    self.out("  " + line.strip())
+                return
+            lines = [line for line in HELP["functions"].splitlines()
+                     if re.search(rf"(^|[\s(]){re.escape(topic)}\(", line) or re.match(rf"\s*[a-z0-9 ]*\b{topic}\b", line)]
+            if topic in BUILTINS and lines:
+                for line in lines:
+                    self.out(line)
+                return
+            raise GlueError(f"no help for {topic!r}. Topics: {', '.join(k for k in HELP if k)}, "
+                            "or any function name")
         for line in HELP[topic].splitlines():
             self.out(line)
 

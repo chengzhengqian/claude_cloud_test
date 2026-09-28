@@ -470,3 +470,16 @@ def test_invalidate_where_updates_only_marked_curves(proj):
     r = s.eval("dE")
     r.to_pandas()
     assert "updated cached a.E - b.E: recomputed 1 of 3 curves" in r.report
+
+
+def test_max_along_an_input_inside_arithmetic(session):
+    # max(y, n) is a reduction along n, also inside arithmetic; max(a, b) of two fields is pointwise
+    session.define("Eg", "resample(a.E, grid=linspace(0.1, 0.9, 9))")
+    r = session.eval("max(Eg, n) - min(Eg, n)")
+    assert str(r.type).startswith("[U, T")
+    df = r.to_pandas()
+    # E = T^2 - U*n with n in {0.5, 1}: the spread over n is U/2
+    for U, g in df.groupby("U"):
+        np.testing.assert_allclose(g["value"], U * 0.5, atol=2e-3)
+    p = session.eval("max(a.E, a.E * 2)")
+    assert "n" in p.type.input_names
