@@ -100,6 +100,10 @@ same grid node are always exactly equal.
   separately and ignore the points where that output is missing.
 - Reductions ignore missing values. If every value of a curve is missing,
   the result is missing.
+- The setting `nan_rows = error` is a check on top of these rules:
+  evaluation stops at a source that has a missing value. It isn't a
+  parameter of any node, since it can only stop a calculation, never change
+  its values. So it doesn't change node ids.
 
 ---
 
@@ -443,7 +447,7 @@ data and skip work. They never change a result.
 |---|---|---|
 | L1 | `filter` or `slice` on input u commutes with `map`, `select`, `rename`, and with every along-x operation where x ≠ u. | Reading only the files a result needs. |
 | L2 | `filter` on input u passes into each `join` operand that has u, and is dropped for operands without it. | The same, through joins. |
-| L2b | A `filter` on the new input of a `transform` whose formula uses only exact inputs and numbers can be checked against the file index: the formula is evaluated on each file's path values, without reading data. Other filters on it are applied after reading. In 0.2 this is done for transforms in a table's `[field.transform]`, which are applied when the index is built. A `transform(...)` in an expression filters after reading. | Reading less data when inputs are rescaled. |
+| L2b | A `filter` on the new input of a `transform` whose formula uses only exact inputs and numbers can be checked against the file index: the formula is evaluated on each file's path values, without reading data. Other filters on it are applied after reading. A table's `[field.transform]` does this when the index is built. A `transform(...)` node does it by asking its operand which values the formula's inputs can take (from the file index, through nodes that keep input values), evaluating the formula on them, and pushing an equality list on those inputs. The filter itself is still applied at the transform, so the result is exact. | Reading less data when inputs are rescaled. |
 | L3 | `filter` or `slice` on the input x does **not** commute with `resample`, `deriv`, `cumint`, `reduce`, or `swap` along x. | Why x ranges are applied after these. |
 | L4 | `map(map(F, f), g) = map(F, g after f)`. | Fusing pointwise steps. |
 | L5 | `join` is associative and commutative, up to output labels. | Reordering joins. |
@@ -798,7 +802,7 @@ because they either have different ids or different fingerprints.
 | Where | What | Lifetime |
 |---|---|---|
 | memory | any node computed in the session | the session, with a size limit |
-| `.glue/cache/<id>.parquet` | intermediate nodes worth keeping, like resampled or differentiated curves | until `gc`, with a size limit (`cache_mb`) |
+| `.glue/cache/<id>-<fp>.parquet` | intermediate nodes worth keeping, like resampled or differentiated curves | until `gc`, with a size limit (`disk_cache_mb`) |
 | dataset files | named results | permanent, until you delete them |
 
 A dataset file is a named pointer into this store. It holds a tree, and the
@@ -862,22 +866,28 @@ fingerprint both match. The id fixes the calculation, including every
 parameter. The fingerprint fixes the data. Names, file locations, and the
 order in which things were saved can't cause a wrong reuse.
 
-**What 0.2 implements.** The id and fingerprint rules, epochs, `invalidate`
-(all three forms), `why`, `gc`, `refresh`, and pinning work as written.
-Some parts are simpler for now:
+**How 0.2 does it.** The id and fingerprint rules, epochs, `invalidate`
+(all three forms), `why`, `gc`, `refresh`, pinning, and `status --all`
+work as written. Some details:
 
-- Step 3 above, recomputing only the changed curves, is done for saved
-  datasets by `refresh`. A cached intermediate value in memory or on disk
-  is recomputed in full when its fingerprint changes.
+- Step 3 above works the same way for saved datasets (`refresh`) and for
+  cached values of expensive nodes: resample, deriv, cumint, reduce, swap,
+  apply, align, and legendre. Each such value keeps the chunk entries of
+  the files under it. On the next use after a change, the changed chunks'
+  input values are traced up to the node's inputs, as in `refresh`, only
+  those keys are recomputed, and they replace the old rows. When a change
+  can't be traced, the value is computed in full. The code is in
+  `glue/core/incremental.py`.
 - The disk cache is off by default. `set disk_cache true` turns it on for
-  resample, deriv, cumint, reduce, swap, apply, align, and legendre nodes.
-  It has no size limit yet. `gc` removes entries nothing uses.
+  the same expensive nodes. Only whole values, with no filter pushed into
+  them, are written. Each node keeps only its newest value, which is what
+  the next update starts from. `disk_cache_mb` (default 1024) limits the
+  folder, and the least recently used values are removed first. `gc`
+  removes the values nothing uses.
 - `invalidate NAME` for a view or calc drops the cached values of every
   node under it, including ones other names share. They're recomputed on
   next use, so this is only slower, never wrong. For a dataset, it marks
   the dataset invalid, and `refresh` recomputes it in full.
-- `status --all` for intermediate nodes isn't there yet. `status` covers
-  datasets.
 
 ---
 

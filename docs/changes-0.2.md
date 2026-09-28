@@ -51,6 +51,10 @@ the same ids, whatever it's called and wherever its files are.
 | `branches` | `error`, `split` | `error` | What `swap` and `legendre` do with a curve that isn't monotonic. |
 | `flat_tol` | number | `1e-9` | Steps smaller than this count as flat in `swap`. |
 | `disk_cache` | `true`, `false` | `false` | Keep expensive intermediate values in `.glue/cache/` between sessions. |
+| `disk_cache_mb` | number | `1024` | Size limit for `.glue/cache/`. The least recently used values are removed first. |
+
+`nan_rows = error` now works. It stops at a table that has rows with a
+missing value. In 0.1 the setting was accepted but did nothing.
 
 ### 2.3 Commands
 
@@ -58,6 +62,7 @@ the same ids, whatever it's called and wherever its files are.
 |---|---|
 | `invalidate TABLE [where ...]` | Mark a table's files as changed, for changes that file times don't show. With `where`, only the matching files. Recorded in `.glue/epochs.toml`. |
 | `invalidate NAME` | For a view or calc, drop its cached values. For a dataset, mark it for a full recompute. |
+| `status --all` | Also list the cached values under each view, calc, and dataset, and which are stale. `glue status --all` on the command line. |
 | `why NAME` | The calculation tree under NAME, its state, and the leaves it reads, with changed files. |
 | `gc` | Delete cached values that no view, calc, or dataset uses. |
 | `save NAME --recipe-only` | Write the tree to `calcs/NAME.toml` with no data, and add it to `[calcs]`. |
@@ -65,7 +70,20 @@ the same ids, whatever it's called and wherever its files are.
 | `load FILE as NAME` | Load a table, dataset, or calc under another name. For a project, NAME is a prefix: `load old/project.toml as old` gives `old_dmft`. |
 | `explain` | Now prints the core tree, the filters pushed to each source, and how many files each source reads. |
 
-### 2.4 Table files
+### 2.4 Caching and reading less
+
+- **Cached values are updated curve by curve.** After a file changes, the
+  next plot or `show` recomputes only the curves that file affects, for
+  every expensive step (resample, deriv, cumint, reduce, swap, apply,
+  align, legendre). The rest comes from the cache. The report says
+  `updated cached dmft.E - ed.E: recomputed 2 of 11 curves`. With
+  `disk_cache`, this also works across sessions. In 0.1 only `refresh` of
+  a saved dataset worked this way.
+- **Filters on a transformed input skip files.** For
+  `transform(dmft.E, U, u = U / 2) where u=1.0`, glue works out from the
+  file index that only U=2.0 gives u=1.0, and reads only those files.
+
+### 2.5 Table files
 
 A `[field]` section gives a table's type directly:
 
@@ -94,12 +112,12 @@ built, so `where U=2.0` still skips files without opening them.
 `[curves]` is still read, as an alias: `by` and `x` become inputs, `x`
 becomes the axis, and `y` becomes the outputs.
 
-### 2.5 Projects
+### 2.6 Projects
 
 A new `[calcs]` section maps names to calc files. A calc is a frozen view:
 a saved tree that doesn't follow the current settings.
 
-### 2.6 Dataset files
+### 2.7 Dataset files
 
 Dataset files have version `"0.2"`, a `[type]` section, and a tree in
 `[recipe.nodes]`:
@@ -128,10 +146,11 @@ def = "8bb4786c839b"
 written in the node that uses it, so the tree means the same thing in any
 later version of glue. `[cache]` gains `points`, the number of rows.
 
-### 2.7 Python
+### 2.8 Python
 
 - `Result.type` gives the field type, and `Result.tree()` prints the tree.
-- `Session.invalidate`, `Session.why`, and `Session.gc` match the commands.
+- `Session.invalidate`, `Session.why`, and `Session.gc` match the commands,
+  and `Session.status_lines(all=True)` matches `status --all`.
 - `Session.load(path, name=...)` matches `load FILE as NAME`.
 - Plugins are recorded as `module:qualname@version`, as in
   `physops:fwhm@1`. The colon allows functions defined inside other
@@ -190,6 +209,7 @@ Nothing has to be done by hand.
 | `glue/core/context.py` | Evaluation: fingerprints, the value store, filter pushdown, and `explain` plans |
 | `glue/core/tree.py` | Writing and reading trees in TOML, and printing them |
 | `glue/core/store.py` | The value store, epochs, and fingerprint helpers |
+| `glue/core/incremental.py` | Tracing changed files to the curves they affect, for `refresh` and for cached values |
 | `glue/elaborate.py` | Translating surface expressions into core trees |
 | `glue/dataset.py` | Dataset and calc files, status, incremental refresh |
 | `glue/session.py`, `glue/shell.py` | The session and the shell, on top of the core |
@@ -198,15 +218,9 @@ Nothing has to be done by hand.
 
 ## 6. Not done yet
 
-- A cached intermediate value is recomputed in full when one of its files
-  changes. Only saved datasets are refreshed curve by curve.
-- The disk cache has no size limit.
-- `status --all` for intermediate values.
-- A `transform(...)` in an expression doesn't skip files. A filter on its
-  new input is applied after reading. A transform in the table's
-  `[field.transform]` does skip files.
-- The `nan_rows` setting is accepted, but rows with missing values are
-  always dropped.
 - Error columns can be plotted with `errorbars`, but they aren't carried
   through arithmetic.
 - `legendre_hull`, the convex-envelope version of `legendre`.
+- Only expensive steps (resample, deriv, cumint, reduce, swap, apply,
+  align, legendre) are updated curve by curve after a file changes. Cheap
+  steps are recomputed from their updated inputs.

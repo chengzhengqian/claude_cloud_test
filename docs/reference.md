@@ -887,9 +887,10 @@ transform(C, T, t = T / gap.gap)         # T in units of each run's gap
 - Two points that get the same v value with the same other inputs are an
   error, since the inputs would no longer determine the outputs.
 
-A transform in an expression is applied after reading, so `where U=2.0` on
-its result reads every file. To skip files, put the transform in the table
-file's `[field.transform]` (3.5).
+A filter on v still skips files when the formula uses only exact inputs.
+For `transform(dmft.E, U, u = U / 2) where u=1.0`, glue works out from the
+file index that only U=2.0 can give u=1.0, and reads only those files.
+`explain` shows how many files are read.
 
 The scaling collapse in `examples/hubbard` uses the second form: with T in
 units of the gap, the specific heat peaks of all U fall on one curve.
@@ -1016,11 +1017,12 @@ Higher levels win:
 | `duplicates` | `error`, `mean`, `first`, `last`, `drop` | `error` | Repeated x within one curve: stop, average, keep the first or last, or drop all copies |
 | `fewpoints` | `linear`, `drop`, `error` | `linear` | Too few points for the method: fall back to linear (needs 2 points, else the curve is dropped), drop the curve, or stop |
 | `unmatched` | `drop`, `error` | `drop` | Curve keys on only one side of an operation |
-| `nan_rows` | `drop`, `error` | `drop` | Rows with a missing x or y. Accepted, but 0.2 always drops them. |
+| `nan_rows` | `drop`, `error` | `drop` | Rows with a missing value: leave them out of fits and reductions, or stop at the table that has them |
 | `align` | `auto`, `[]`, `[NAME]` | `auto` | Which input to align along when combining fields (7.7). `[]` never aligns. |
 | `branches` | `error`, `split` | `error` | What `swap` and `legendre` do with a curve that isn't monotonic (8.12) |
 | `flat_tol` | a number | `1e-9` | In `swap`, steps smaller than this count as flat |
 | `disk_cache` | `true`, `false` | `false` | Keep expensive intermediate values in `.glue/cache/` for later sessions (13.4) |
+| `disk_cache_mb` | a whole number | `1024` | Size limit for `.glue/cache/` |
 | `strict` | `true`, `false` | `false` | Require an explicit grid for alignment |
 | `report` | `short`, `full`, `off` | `short` | `full` also lists every affected curve key |
 | `fingerprint` | `stat`, `hash` | `stat` | How saved datasets detect changed inputs (13.3) |
@@ -1085,7 +1087,7 @@ current folder when typed. Output paths (`plot > FILE`, `save ... as`,
 | `save NAME --view` | Write the variable NAME as a view in the project file. No data is saved. | `save rel --view` |
 | `save NAME --recipe-only` | Write the calculation tree of NAME to `calcs/NAME.toml`, with no data, and add it to `[calcs]`. | `save rel --recipe-only` |
 | `export EXPR to FILE [where ...] [with ...]` | Write plain data with no recipe. `.csv`, `.parquet`, or `.dat`/`.txt` (one block per curve for gnuplot). | `export dE to out/dE.dat where U=2.0` |
-| `status [NAME]` | Dataset states (13.2). | `status` |
+| `status [NAME] [--all]` | Dataset states (13.2). `--all` also lists cached values (13.4). | `status --all` |
 | `refresh NAME \| --all [--full] [--force]` | Recompute stale datasets (13.3). | `refresh --all` |
 | `pin NAME`, `unpin NAME` | Stop or allow automatic refresh of a dataset. | `pin figure3_data` |
 | `invalidate TABLE [where ...]` | Mark a table's files as changed (13.4). | `invalidate ed where U=2.0` |
@@ -1277,9 +1279,35 @@ is reused only when its node id and the fingerprints of the files under it
 both match. So after a file changes, the next plot recomputes what depends
 on it, with no command needed.
 
-With `set disk_cache true`, expensive values (resampled, differentiated,
-aligned, ...) are also saved in `.glue/cache/` and reused by later
-sessions.
+It recomputes only what the changed file affects. For expensive steps
+(resampled, differentiated, aligned, ...), glue finds the curves that read
+the changed file, recomputes those, and keeps the rest:
+
+```
+> plot dE by U, n where J=0.1
+  aligned dmft.E, ed.E: 11 curves matched on (U, J, n), grid overlap(n=200), method pchip
+                           # two files in data/ed are rerun
+> plot dE by U, n where J=0.1
+  aligned dmft.E, ed.E: 2 curves matched on (U, J, n), grid overlap(n=200), method pchip
+  updated cached dmft.E - ed.E: recomputed 2 of 11 curves
+```
+
+With `set disk_cache true`, expensive values are also saved in
+`.glue/cache/`, so later sessions start from them too. `disk_cache_mb`
+(default 1024) limits the folder. The least recently used values go first.
+
+`status --all` lists the cached values under each view, calc, and dataset,
+and marks the ones whose files changed since:
+
+```
+> status --all
+  dE_fine        fresh
+  cached values:
+    dE (view): 3 cached values, 0 fresh, 3 stale
+      stale: align 528eed5154d3 (dmft.E - ed.E), reads dmft, ed
+```
+
+A stale cached value isn't an error. It's updated the next time it's used.
 
 Some changes don't show in size and modification time: files copied with
 their times kept (`cp -p`, `rsync -t`), or a problem you know about but
@@ -1309,7 +1337,7 @@ calc, or dataset uses.
 ```
 glue [--trust] [PROJECT]                     start the shell
 glue run SCRIPT [--project P] [--quiet] [--trust]
-glue status [PROJECT] [--trust]
+glue status [PROJECT] [--all] [--trust]
 glue refresh NAME | --all [--full] [--force] [--project P] [--trust]
 glue scan [PROJECT] [--trust]
 ```
@@ -1438,14 +1466,9 @@ traceback in the shell.
 
 ## 18. Limits of version 0.2
 
-- A cached intermediate value is recomputed in full when one of its files
-  changes. Saved datasets are refreshed curve by curve.
-- The disk cache has no size limit. Use `gc`.
-- A `transform(...)` in an expression doesn't skip files. Put it in the
-  table's `[field.transform]` to skip files.
 - Error columns aren't carried through operations.
 - Units are only kept by `+`, `-`, and a few functions. No unit arithmetic.
-- `nan_rows = error` isn't implemented. Rows with missing values are
-  always dropped.
 - No complex numbers.
 - A dataset used as an input to another dataset is tracked as a whole.
+- Only expensive steps are updated curve by curve. Cheap steps, like
+  arithmetic, are recomputed from their inputs, which are updated.

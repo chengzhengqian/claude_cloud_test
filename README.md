@@ -89,7 +89,8 @@ df2 = (s.dmft.E - s.ed.E).to_pandas(where="U=2.0", method="cubic", duplicates="m
 
 - `glue/core/`: the core calculus. `types.py` (field types), `nodes.py` (the
   operations), `context.py` (evaluation, pushdown, fingerprints), `tree.py`
-  (saving trees), `store.py` (cached values, `invalidate` marks)
+  (saving trees), `store.py` (cached values, `invalidate` marks),
+  `incremental.py` (recomputing only the curves a changed file affects)
 - `glue/`: the rest. `sources.py` (files, SQLite, HDF5, caches), `lang.py`
   (parser), `elaborate.py` (expressions to core trees), `dataset.py`
   (datasets, calcs, status, refresh), `plotting.py`, `shell.py`, `cli.py`

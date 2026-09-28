@@ -461,3 +461,12 @@ def test_update_after_a_mean_over_n(proj):
     df = r.to_pandas()
     fresh = quiet(proj / "project.toml").eval("mean(resample(a.E, grid=linspace(0.1, 0.9, 5)), n)").to_pandas()
     np.testing.assert_allclose(df["value"], fresh["value"])
+
+
+def test_invalidate_where_updates_only_marked_curves(proj):
+    s = quiet(proj / "project.toml")
+    s.eval("dE").to_pandas()
+    s.invalidate("b", lang.parse_where_text("U=1.0, n=0.5"))
+    r = s.eval("dE")
+    r.to_pandas()
+    assert "updated cached a.E - b.E: recomputed 1 of 3 curves" in r.report

@@ -940,7 +940,7 @@ Commands start with a reserved word. Arguments in `[ ]` are optional.
 | `save NAME --recipe-only` | Write the calculation tree to `calcs/NAME.toml` with no data, and add it to `[calcs]`. |
 | `save NAME --view` | Write a variable's expression text to `[views]` in the project file. |
 | `export EXPR to FILE [where ...]` | Write plain data with no recipe. The format comes from the extension: `.csv`, `.parquet`, `.dat`. `.dat` writes one block per curve separated by blank lines, with the curve key in a comment, which gnuplot reads as `index` blocks. |
-| `status [NAME]` | Dataset states (section 6.4). |
+| `status [NAME] [--all]` | Dataset states (section 6.4). `--all` also lists the cached values under each view, calc, and dataset, and which are stale. |
 | `refresh NAME \| --all [--full] [--force]` | Recompute stale datasets. |
 | `pin NAME`, `unpin NAME` | Set or clear `pinned`. |
 | `invalidate TABLE [where ...]` | Mark a table's files as changed, for changes that size and modification time don't show. With `where`, only the matching files. Values that depend on them are recomputed when next used, and saved datasets become stale. Recorded in `.glue/epochs.toml`. |
@@ -1073,10 +1073,12 @@ Before reading, glue works backward from the result:
   alignment, `d`, `int`, reductions, and `swap` need points outside the
   range, so the whole curve is read and the filter is applied after the
   operation.
-- **Filters on a transformed input** skip files when the transform is in
-  the table's `[field.transform]` and uses only path values. A filter on
-  the new input of `transform(...)` in an expression is applied after
-  reading.
+- **Filters on a transformed input** skip files when the transform's
+  formula uses only exact inputs and numbers. In a table's
+  `[field.transform]`, the formula is applied while the index is built. For
+  `transform(...)` in an expression, glue works out which values of the
+  formula's inputs can pass the filter, from the file index, and pushes
+  those down. The filter itself is still applied after the transform.
 - **Filters on outputs** are applied where they are written.
 - **Columns.** Only columns the result needs are read. For `text`, this is
   `usecols`.
@@ -1105,8 +1107,13 @@ holds the values of the nodes that are still needed.
   `invalidate` is never missed. With `disk_cache = true`, the values of
   expensive nodes (resample, deriv, cumint, reduce, swap, apply, align,
   legendre) are also written to `.glue/cache/`, and reused by later
-  sessions. `gc` removes the ones nothing uses. [core.md](core.md) section
-  6.6 has the details.
+  sessions, up to `disk_cache_mb`. `gc` removes the ones nothing uses.
+- **Updates.** When a file under a cached expensive value changes, the next
+  use recomputes only the curves that file affects, and keeps the rest,
+  the same way `refresh` updates a dataset. The report says so:
+  `updated cached dmft.E - ed.E: recomputed 1 of 44 curves`. `status --all`
+  lists the cached values under each name, and which are stale.
+  [core.md](core.md) section 6.6 has the details.
 - **Epochs.** `.glue/epochs.toml` records `invalidate` marks, one number
   per table and per marked file.
 
@@ -1131,11 +1138,12 @@ Settings come from four levels. Higher levels win:
 | `duplicates` | `error`, `mean`, `first`, `last`, `drop` | `error` | Repeated x values within one curve, before fitting. `drop` removes every row with a repeated x. |
 | `fewpoints` | `linear`, `drop`, `error` | `linear` | A curve with fewer points than `method` needs. `linear` falls back to linear if the curve has at least 2 points, and drops it otherwise. |
 | `unmatched` | `drop`, `error` | `drop` | Curve keys that exist on only one side. |
-| `nan_rows` | `drop`, `error` | `drop` | Rows with a missing x or y, before fitting. Accepted, but 0.2 always drops them. |
+| `nan_rows` | `drop`, `error` | `drop` | Rows with a missing value. `drop` leaves them out of fits and reductions. `error` stops at the source that has them. It's a check, not part of the saved tree. |
 | `align` | `auto`, `[]`, `[NAME]` | `auto` | Which input to align along when combining fields (section 7.5). |
 | `branches` | `error`, `split` | `error` | What `swap` and `legendre` do with a curve that isn't monotonic. |
 | `flat_tol` | number | `1e-9` | In `swap`, steps smaller than this count as flat. |
 | `disk_cache` | `true`, `false` | `false` | Keep expensive intermediate values in `.glue/cache/` (section 8.4). |
+| `disk_cache_mb` | int | `1024` | Size limit for `.glue/cache/`. The least recently used values are removed first. |
 | `strict` | `true`, `false` | `false` | Require explicit grids for alignment. |
 | `report` | `short`, `full`, `off` | `short` | Report detail. |
 | `fingerprint` | `stat`, `hash` | `stat` | Fingerprint mode for new datasets. |
@@ -1159,7 +1167,7 @@ later doesn't change a saved tree.
 ```
 glue [PROJECT]                 start the shell, optionally loading a project
 glue run SCRIPT.glue           run a script and exit
-glue status [PROJECT]          print dataset states
+glue status [PROJECT] [--all]  print dataset states
 glue refresh NAME|--all [--full] [--force] [--project P]
                                recompute stale datasets
 glue scan [PROJECT]            rebuild chunk indexes
@@ -1366,8 +1374,4 @@ Planned, and possible to add without changing the rules above:
 - Carrying error columns through operations.
 - Unit arithmetic beyond `+` and `-`.
 - Complex numbers.
-- Recomputing only the changed curves of cached intermediate values. Saved
-  datasets already do this.
-- A size limit for the disk cache, and `status --all` for intermediate
-  values.
 - `legendre_hull`, the convex-envelope version of `legendre`.

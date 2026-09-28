@@ -641,7 +641,8 @@ class Session:
             else:
                 bump(self.glue_dir, t.def_id)
                 msg = f"marked every file of {name} as changed"
-            self.store.clear()
+            # no need to clear the store: the marks change the fingerprints, so cached
+            # values are updated from the marked files on next use
             return [msg, "values that depend on them are recomputed when next used, and saved datasets are stale"]
         if ent.kind == "dataset":
             D.invalidate(ent.table.info)
