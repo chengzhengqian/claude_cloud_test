@@ -393,3 +393,17 @@ def test_filter_on_transformed_input_skips_files(proj, expr, where, reads, U):
     expect = apply_preds([pred_from_selector(x) for x in lang.parse_where_text(where)], full)
     assert len(df) == len(expect)
     np.testing.assert_allclose(np.sort(df.iloc[:, -1]), np.sort(expect.iloc[:, -1]))
+
+
+def test_status_all_lists_cached_values(proj):
+    s = quiet(proj / "project.toml")
+    s.set_setting("disk_cache", "true")
+    frame(s, "dE")
+    text = "\n".join(s.status_lines(all=True))
+    assert "dE (view):" in text and "stale" not in text.split("cached values:")[1]
+    time.sleep(0.01)
+    p = proj / "data" / "b" / "U_1.0" / "n_0.5.dat"
+    p.write_text(p.read_text() + "\n")
+    s2 = quiet(proj / "project.toml")        # a new session: only the disk cache is left
+    text = "\n".join(s2.status_lines(all=True))
+    assert "dE (view):" in text and "stale: align" in text and "reads a, b" in text

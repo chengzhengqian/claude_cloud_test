@@ -22,7 +22,7 @@ Commands:
   load FILE [as NAME]              reload           guess DIR           new table NAME ...
   edit NAME        scan [NAME]     ls               info NAME           values NAME.INPUT
   show EXPR        explain STMT    del NAME         save NAME ...       export EXPR to FILE
-  status [NAME]    refresh NAME|--all               pin NAME            unpin NAME
+  status [--all]   refresh NAME|--all               pin NAME            unpin NAME
   invalidate NAME [where ...]      why NAME         gc                  plot Y ...
   set [KEY VALUE]  unset KEY       run FILE         py                  help [TOPIC]   quit
 Topics: help expressions, help functions, help settings, help plot, help COMMAND""",
@@ -95,7 +95,8 @@ Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
              "save NAME --recipe-only    save the calculation tree only, as a calc file\n"
              "save NAME --view           write the variable as a view in the project file"),
     "export": "export EXPR to FILE.csv|.parquet|.dat [where ...] [with ...]",
-    "status": "status [NAME]       dataset states: fresh, stale, orphaned, modified, invalidated",
+    "status": ("status [NAME]       dataset states: fresh, stale, orphaned, modified, invalidated\n"
+               "status --all        also the cached values under each view, calc, and dataset"),
     "invalidate": ("invalidate TABLE [where ...]   mark files as changed, so what depends on them recomputes\n"
                    "invalidate NAME               drop cached values of a view or calc, or mark a dataset invalid"),
     "why": "why NAME            the calculation tree of NAME, with the state of its leaves",
@@ -467,7 +468,7 @@ class Shell:
     def cmd_status(self, p, flags, text):
         name = None if p.at_end() else p.expect_name()
         p.expect_end()
-        self._lines(self.session.status_lines(name))
+        self._lines(self.session.status_lines(name, all="all" in flags))
 
     def cmd_refresh(self, p, flags, text):
         name = None if p.at_end() else p.expect_name()

@@ -39,6 +39,8 @@ def main(argv=None):
     elif sub in ("status", "scan"):
         ap.add_argument("cmd")
         ap.add_argument("project", nargs="?")
+        if sub == "status":
+            ap.add_argument("--all", action="store_true", help="also show cached intermediate values")
     else:
         ap.add_argument("project", nargs="?")
     args = ap.parse_args(argv)
@@ -55,7 +57,7 @@ def main(argv=None):
             return 0
         if sub == "status":
             s = _session(args.project, args.trust, warn_stale=False)
-            for line in s.status_lines():
+            for line in s.status_lines(all=args.all):
                 print(line)
             return 0
         if sub == "refresh":

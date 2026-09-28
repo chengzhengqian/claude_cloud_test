@@ -593,7 +593,9 @@ class Session:
             return [self.datasets[name].info]
         return [t.info for t in self.datasets.values()]
 
-    def status_lines(self, name=None):
+    def status_lines(self, name=None, all=False):  # noqa: A002
+        if all:
+            return self.status_lines(name) + self.cache_status_lines()
         out = []
         seen = {}
         for info in self.dataset_infos(name):
@@ -685,23 +687,64 @@ class Session:
                 lines.append(f"  leaf dataset {leaf.table.name}: {st.state}")
         return lines
 
-    def gc(self):
-        keep = set()
-        for name in list(self.views) + list(self.variables):
-            try:
-                node, _ = self.compile(lang.Name(name))
-                keep |= {n.id for n in node.walk()}
-            except GlueError:
-                pass
-        for ent in self.calcs.values():
-            keep |= {n.id for n in ent.root.walk()}
-        for t in self.datasets.values():
-            if t.info.reproducible:
+    def named_roots(self):
+        """(kind, name, root) for every view, variable, calc, and dataset whose tree can be built."""
+        out = []
+        for kind, names in (("view", self.views), ("variable", self.variables)):
+            for name in list(names):
                 try:
-                    root, _, _ = D.build_tree(t.info)
-                    keep |= {n.id for n in root.walk()}
+                    out.append((kind, name, self.compile(lang.Name(name))[0]))
                 except GlueError:
                     pass
+        for name, ent in self.calcs.items():
+            out.append(("calc", name, ent.root))
+        for name, t in self.datasets.items():
+            if t.info.reproducible:
+                try:
+                    out.append(("dataset", name, D.build_tree(t.info)[0]))
+                except GlueError:
+                    pass
+        return out
+
+    def cache_status_lines(self):
+        """For status --all: the cached values under each name, and whether they match the files now."""
+        ctx = self.context()
+        disk = self.store.disk_dir or (os.path.join(self.glue_dir, "cache") if self.glue_dir else None)
+        on_disk = {}
+        if disk and os.path.isdir(disk):
+            for f in os.listdir(disk):
+                nid, _, rest = f.partition("-")
+                on_disk.setdefault(nid, set()).add(rest.split(".")[0])
+        in_mem = {}
+        for key in self.store.items:
+            if len(key) == 3 and not key[1]:
+                in_mem.setdefault(key[0], set()).add(key[2])
+        lines = []
+        for kind, name, root in self.named_roots():
+            fresh, stale = [], []
+            for n in root.walk():
+                if n.leaf or (n.id not in on_disk and n.id not in in_mem):
+                    continue
+                fp = ctx.fp(n)
+                ok = fp in in_mem.get(n.id, ()) or fp[:12] in on_disk.get(n.id, ())
+                (fresh if ok else stale).append(n)
+            if not fresh and not stale:
+                continue
+            total = len(fresh) + len(stale)
+            text = f"{name} ({kind}): {total} cached value{'s' if total != 1 else ''}, {len(fresh)} fresh"
+            if stale:
+                text += f", {len(stale)} stale"
+            lines.append(text)
+            for n in stale:
+                changed = [lf.label() for lf in n.leaves() if isinstance(lf, N.SourceNode)]
+                lines.append(f"  stale: {n.op} {n.id}" + (f" ({n.name})" if n.name else "") +
+                             ", reads " + ", ".join(sorted(changed)))
+        return ["cached values:"] + ["  " + x for x in lines] if lines else ["no cached values"]
+
+    def gc(self):
+        keep = set()
+        for _, _, root in self.named_roots():
+            keep |= {n.id for n in root.walk()}
         if self.glue_dir:
             self.store.disk_dir = os.path.join(self.glue_dir, "cache")
         removed = self.store.gc(keep)
