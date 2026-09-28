@@ -87,6 +87,7 @@ class Store:
         self.items = OrderedDict()
         self.disk_dir = disk_dir
         self.disk_limit = disk_limit_mb << 20
+        self.meta = {}      # key -> {leaf id: chunk entries} when the value was computed
 
     def _on_disk(self, key):
         # only whole, unfiltered values in the plain (id, sels, fp) form go to disk
@@ -109,15 +110,47 @@ class Store:
                 return frame
         return None
 
-    def put(self, key, frame, disk=False):
+    def put(self, key, frame, disk=False, meta=None):
         self._put_mem(key, frame)
+        if meta is not None:
+            self.meta[key] = meta
         if disk and self._on_disk(key):
             try:
                 os.makedirs(self.disk_dir, exist_ok=True)
                 frame.to_parquet(self._path(key), index=False)
+                if meta is not None:
+                    with open(self._path(key)[:-len(".parquet")] + ".chunks.json", "w") as f:
+                        json.dump(meta, f)
             except Exception:
                 return
+            # only the newest value of a node is worth keeping: it's what an update starts from
+            mine = os.path.basename(self._path(key))
+            for f in os.listdir(self.disk_dir):
+                if f.startswith(key[0] + "-") and f.endswith(".parquet") and f != mine:
+                    _remove_value(os.path.join(self.disk_dir, f))
             self.prune_disk()
+
+    def older(self, key):
+        """A value for the same node and filters with another fingerprint, with its chunk entries:
+        (frame, meta), or None."""
+        node_id, sels = key[0], key[1]
+        for k in reversed(self.items):
+            if k[0] == node_id and k[1] == sels and k != key and k in self.meta and len(k) == len(key):
+                return self.items[k][0], self.meta[k]
+        if self._on_disk(key) and os.path.isdir(self.disk_dir):
+            files = [f for f in os.listdir(self.disk_dir) if f.startswith(node_id + "-") and f.endswith(".chunks.json")]
+            files.sort(key=lambda f: os.stat(os.path.join(self.disk_dir, f)).st_mtime_ns, reverse=True)
+            for f in files:
+                base = os.path.join(self.disk_dir, f[:-len(".chunks.json")])
+                if base == self._path(key)[:-len(".parquet")]:
+                    continue
+                try:
+                    with open(base + ".chunks.json") as fh:
+                        meta = json.load(fh)
+                    return pd.read_parquet(base + ".parquet"), meta
+                except Exception:
+                    continue
+        return None
 
     def prune_disk(self):
         """Remove the least recently used cache files until the folder is under the size limit."""
@@ -125,15 +158,19 @@ class Store:
             return 0
         files = []
         for f in os.listdir(self.disk_dir):
+            if not f.endswith(".parquet"):
+                continue
             path = os.path.join(self.disk_dir, f)
             st = os.stat(path)
-            files.append((st.st_mtime_ns, st.st_size, path))
+            side = path[:-len(".parquet")] + ".chunks.json"
+            size = st.st_size + (os.stat(side).st_size if os.path.exists(side) else 0)
+            files.append((st.st_mtime_ns, size, path))
         total = sum(f[1] for f in files)
         removed = 0
         for _, size, path in sorted(files):
             if total <= self.disk_limit:
                 break
-            os.remove(path)
+            _remove_value(path)
             total -= size
             removed += 1
         return removed
@@ -145,7 +182,8 @@ class Store:
         self.items[key] = (frame, size)
         self.used += size
         while self.used > self.limit and len(self.items) > 1:
-            _, (_, s) = self.items.popitem(last=False)
+            k, (_, s) = self.items.popitem(last=False)
+            self.meta.pop(k, None)
             self.used -= s
 
     def _path(self, key):
@@ -156,11 +194,12 @@ class Store:
         node_ids = set(node_ids)
         for key in [k for k in self.items if k[0] in node_ids]:
             self.used -= self.items.pop(key)[1]
+            self.meta.pop(key, None)
         removed = 0
         if self.disk_dir and os.path.isdir(self.disk_dir):
             for f in os.listdir(self.disk_dir):
-                if f.split("-")[0] in node_ids:
-                    os.remove(os.path.join(self.disk_dir, f))
+                if f.endswith(".parquet") and f.split("-")[0] in node_ids:
+                    _remove_value(os.path.join(self.disk_dir, f))
                     removed += 1
         return removed
 
@@ -169,16 +208,30 @@ class Store:
         removed = 0
         if self.disk_dir and os.path.isdir(self.disk_dir):
             for f in os.listdir(self.disk_dir):
-                if f.split("-")[0] not in keep_ids:
-                    os.remove(os.path.join(self.disk_dir, f))
+                path = os.path.join(self.disk_dir, f)
+                if f.split("-")[0] in keep_ids:
+                    continue
+                if f.endswith(".parquet"):
+                    _remove_value(path)
                     removed += 1
+                elif os.path.exists(path) and not os.path.exists(path[:-len(".chunks.json")] + ".parquet"):
+                    os.remove(path)
         for key in [k for k in self.items if k[0] not in keep_ids]:
             self.used -= self.items.pop(key)[1]
+            self.meta.pop(key, None)
         return removed
 
     def clear(self):
         self.items.clear()
+        self.meta.clear()
         self.used = 0
+
+
+def _remove_value(parquet_path):
+    os.remove(parquet_path)
+    side = parquet_path[:-len(".parquet")] + ".chunks.json"
+    if os.path.exists(side):
+        os.remove(side)
 
 
 def sels_sig(sels):

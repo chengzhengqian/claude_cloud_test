@@ -14,14 +14,15 @@ from . import lang
 from .core import LIB
 from .core import nodes as N
 from .core.context import Context
-from .core.formula import Pred, apply_preds, pred_from_selector, predicate_text
+from .core.formula import apply_preds, pred_from_selector, predicate_text
+from .core.incremental import changed_chunks, pred_sets
 from .core.store import Store, find_glue_dir, load_epochs, salts
 from .core.tree import dump_nodes, load_nodes
 from .core.types import FType, Out, Var, curve_key
 from .elaborate import Elaborator, Entity
 from .errors import GlueError
 from .settings import Settings, convert
-from .sources import CacheTable, ColumnMeta, GlobTable, Hdf5Table, check_keys, check_version, digest, load_table, _meta_from
+from .sources import CacheTable, ColumnMeta, check_keys, check_version, digest, load_table, _meta_from
 from .util import check_name, read_toml, relpath, sha256_file, toml_dumps
 
 TOP_KEYS = {"glue", "kind", "name", "created", "tool", "pinned", "description", "reproducible", "invalid",
@@ -485,16 +486,7 @@ def status(info, index_dir=None, _seen=None):
             st.rebuild = True
             st.details.append(f"{label}: table definition changed")
             continue
-        old = stored.get(label, {})
-        i = 2 if info.fp_mode == "hash" else 1
-
-        def same(a, b):
-            a, b = list(a) + [""] * 4, list(b) + [""] * 4
-            return a[0] == b[0] and a[i] == b[i] and (a[3] or "") == (b[3] or "")
-
-        changed = {r for r in cur if r in old and not same(cur[r], old[r])}
-        added = set(cur) - set(old)
-        removed = set(old) - set(cur)
+        changed, added, removed = changed_chunks(stored.get(label, {}), cur, info.fp_mode)
         if changed or added or removed:
             st.changed[label] = changed | added | removed
             parts = [f"{len(v)} {w}" for v, w in ((changed, "changed"), (added, "added"), (removed, "removed")) if v]
@@ -508,66 +500,13 @@ def status(info, index_dir=None, _seen=None):
     return st
 
 
-def trace(node, u):
-    """Leaves an input of `node` comes from: [(leaf node, leaf input name)]."""
-    if node.leaf:
-        return [(node, u)]
-    if not node.eval_children:
-        return trace(node.expanded, u)
-    out = []
-    for path, c in node.children():
-        m = node.map_in(path, u)
-        if m is not None and m in c.part:
-            out += trace(c, m)
-    return out
-
-
-def _chunk_coords(table, rel, index):
-    for ch in index:
-        if ch.rel == rel:
-            return ch.coords
-    if isinstance(table, GlobTable):
-        raw = table.template.match(rel)
-        return table._coords(raw) if raw else None
-    if isinstance(table, Hdf5Table) and "::" in rel:
-        raw = table.template.match(rel.split("::", 1)[1])
-        if raw:
-            c = {k: v for k, v in raw.items()}
-            from .util import normalize
-
-            c = {k: normalize(v, table.ctype(k), table.digits(k)) for k, v in c.items()}
-            c.update(table.constants)
-            return table.apply_path_transforms(c)
-    return None
-
-
 def _pred_sets(root, st, ns):
     """For each changed chunk, the filter on root inputs that selects the curves it affects."""
-    part = [u for u in root.type.input_names if u in root.part]
-    if not part:
-        return None
-    traces = {u: trace(root, u) for u in part}
-    sets = {}
-    for label, rels in st.changed.items():
+    for label in st.changed:
         ent = ns.entities.get(label)
-        if ent is None or ent.kind != "table" or any(r.startswith("(") for r in rels):
+        if ent is None or ent.kind != "table":
             return None
-        t = ent.table
-        index = t.index()
-        for rel in rels:
-            coords = _chunk_coords(t, rel, index)
-            if coords is None:
-                return None
-            preds = []
-            for u in part:
-                for leaf, v in traces[u]:
-                    if isinstance(leaf, N.SourceNode) and leaf.table.name == label and v in coords:
-                        preds.append(Pred(u, "=", coords[v]))
-                        break
-            if not preds:
-                return None
-            sets[tuple(p.src() for p in preds)] = preds
-    return list(sets.values())
+    return pred_sets(root, st.changed)
 
 
 def refresh(info, full=False, force=False, index_dir=None, log=print, _done=None):

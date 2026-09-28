@@ -407,3 +407,57 @@ def test_status_all_lists_cached_values(proj):
     s2 = quiet(proj / "project.toml")        # a new session: only the disk cache is left
     text = "\n".join(s2.status_lines(all=True))
     assert "dE (view):" in text and "stale: align" in text and "reads a, b" in text
+
+
+def _touch_b(proj):
+    time.sleep(0.01)
+    p = proj / "data" / "b" / "U_1.0" / "n_0.5.dat"
+    a = np.loadtxt(p)
+    a[:, 1] += 0.5
+    np.savetxt(p, a)
+
+
+def test_cached_values_update_only_changed_curves(proj):
+    s = quiet(proj / "project.toml")
+    s.eval("dE").to_pandas()
+    _touch_b(proj)
+    r = s.eval("dE")
+    df = r.to_pandas()
+    assert "updated cached a.E - b.E: recomputed 1 of 3 curves" in r.report
+    fresh = quiet(proj / "project.toml").eval("dE").to_pandas()
+    np.testing.assert_allclose(df["dE"], fresh["dE"])
+    assert list(df.columns) == list(fresh.columns) and len(df) == len(fresh)
+
+
+def test_cached_values_update_across_sessions(proj):
+    def sess():
+        s = quiet(proj / "project.toml")
+        s.set_setting("disk_cache", "true")
+        return s
+
+    sess().eval("max(dE)").to_pandas()
+    _touch_b(proj)
+    r = sess().eval("max(dE)")
+    df = r.to_pandas()
+    assert any(line.startswith("updated cached") and "1 of 3" in line for line in r.report)
+    fresh = quiet(proj / "project.toml").eval("max(dE)").to_pandas()
+    np.testing.assert_allclose(df["value"], fresh["value"])
+    # only the newest value of each node stays on disk
+    ids = [f.split("-")[0] for f in os.listdir(proj / ".glue" / "cache") if f.endswith(".parquet")]
+    assert len(ids) == len(set(ids))
+
+
+def test_update_after_a_mean_over_n(proj):
+    # the changed file has U=1.0, so the mean for U=1.0 is recomputed from every n
+    s = quiet(proj / "project.toml")
+    r0 = s.eval("mean(resample(a.E, grid=linspace(0.1, 0.9, 5)), n)")
+    r0.to_pandas()
+    time.sleep(0.01)
+    p = proj / "data" / "a" / "U_1.0" / "n_0.5.dat"
+    a = np.loadtxt(p)
+    a[:, 1] += 1.0
+    np.savetxt(p, a)
+    r = s.eval("mean(resample(a.E, grid=linspace(0.1, 0.9, 5)), n)")
+    df = r.to_pandas()
+    fresh = quiet(proj / "project.toml").eval("mean(resample(a.E, grid=linspace(0.1, 0.9, 5)), n)").to_pandas()
+    np.testing.assert_allclose(df["value"], fresh["value"])
