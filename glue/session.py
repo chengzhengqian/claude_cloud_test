@@ -284,7 +284,13 @@ class Session:
             self._claim(t.name, "table")
             self.tables[t.name] = t
         for n, file in datasets.items():
-            t = D.load_dataset(expand_path(file, base), prefix + n)
+            dpath = expand_path(file, base)
+            if not os.path.exists(dpath):
+                # the script that saves it may be about to run, so don't stop the load
+                self.log(f"warning: dataset {prefix + n}: {file} not found, skipped. "
+                         f"Save it again, or remove it from [datasets]")
+                continue
+            t = D.load_dataset(dpath, prefix + n)
             self._claim(t.name, "dataset")
             self.datasets[t.name] = t
         for n, file in calcs.items():

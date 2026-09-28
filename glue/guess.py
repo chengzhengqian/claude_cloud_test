@@ -54,7 +54,7 @@ def guess(directory, name=None, table_dir=None):
     name = name or os.path.basename(root)
     base = os.path.abspath(table_dir) if table_dir else os.getcwd()
     lines = [
-        'glue = "0.1"',
+        'glue = "0.2"',
         'kind = "table"',
         f'name = "{name}"',
         "",
@@ -67,10 +67,12 @@ def guess(directory, name=None, table_dir=None):
         'format = "text"',
         "columns = [" + ", ".join(f'"{c}"' for c in columns) + "]",
         "",
-        "[curves]",
-        f'x = "{columns[0]}"',
+        "[field]",
+        "inputs = [" + ", ".join(f'"{c}"' for c in names + columns[:1]) + "]",
+        "outputs = [" + ", ".join(f'"{c}"' for c in columns[1:]) + "]",
+        f'axis = "{columns[0]}"',
     ]
-    notes = [f"{len(files)} files matched, coordinates: {', '.join(names) or 'none'}",
+    notes = [f"{len(files)} files matched, path inputs: {', '.join(names) or 'none'}",
              f"{ncols} columns in {files[0]}" + (" (names from its header comment)" if columns == header else
                                                   ", rename c0, c1, ... to real names")]
     return "\n".join(lines) + "\n", notes

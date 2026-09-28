@@ -839,12 +839,15 @@ class ResampleNode(AlongNode):
         x = self.params["along"]
         _along_check(self.kid(), x, "resample")
         gx = g.need_input(x, "resample grid")
-        extra = [n for n in g.input_names if n != x and not t.has_input(n)]
-        if extra:
-            raise GlueError(f"resample: the grid has input {extra[0]}, which the field doesn't have")
         parse_method(self.params["method"])
         v = t.var(x)
-        return t.replace_var(x, Var(x, v.dtype, gx.exact, v.unit))
+        t = t.replace_var(x, Var(x, v.dtype, gx.exact, v.unit))
+        # inputs only the grid has: the field is broadcast along them (core.md 2.4)
+        extra = [g.var(n) for n in g.input_names if n != x and not t.has_input(n)]
+        if not extra:
+            return t
+        ins = [w for w in t.inputs if w.name != x] + extra + [t.var(x)]
+        return FType(tuple(ins), t.outputs, t.axis)
 
     def map_in(self, path, u):
         n = self.kids[path[0]]
@@ -860,35 +863,40 @@ class ResampleNode(AlongNode):
         opts = _Params(fewpoints=self.params["fewpoints"])
         outs = self.kid().type.output_names
         G = G[gkeys + [x]].drop_duplicates()
+        common = [c for c in gkeys if c in key]
+        extra = [c for c in gkeys if c not in key]
         groups = dict(_curves(Fr, key))
         frames, nogrid, dropped = [], 0, {}
         for k, g in groups.items():
             kd = dict(zip(key, k))
-            if gkeys:
-                m = np.ones(len(G), dtype=bool)
-                for c in gkeys:
-                    m &= (G[c] == kd[c]).to_numpy()
-                pts = G[x].to_numpy(dtype=float)[m]
-            else:
-                pts = G[x].to_numpy(dtype=float)
-            pts = np.unique(pts)
-            if len(pts) == 0:
+            m = np.ones(len(G), dtype=bool)
+            for c in common:
+                m &= (G[c] == kd[c]).to_numpy()
+            sub = G[m]
+            parts = list(sub.groupby(extra, sort=True)) if extra and len(sub) else [((), sub)]
+            if len(sub) == 0:
                 nogrid += 1
                 continue
             desc = fmt_key(key, k)
-            row = {c: np.full(len(pts), kd[c], dtype=object if isinstance(kd[c], str) else None) for c in key}
-            row[x] = pts
-            any_ok = False
+            fits = {}
             for o in outs:
                 xs, ys = _xy(g, x, o)
                 try:
-                    f = nm.fit(xs, ys, method, opts, ctx.report, desc)
-                    row[o] = f(pts, ext, desc)
-                    any_ok = True
+                    fits[o] = nm.fit(xs, ys, method, opts, ctx.report, desc)
                 except DropCurve as e:
-                    row[o] = np.full(len(pts), np.nan)
+                    fits[o] = None
                     dropped.setdefault(e.reason, []).append(desc)
-            if any_ok:
+            if not any(f is not None for f in fits.values()):
+                continue
+            for ev, sg in parts:
+                pts = np.unique(sg[x].to_numpy(dtype=float))
+                ev = ev if isinstance(ev, tuple) else (ev,)
+                vals = dict(kd, **dict(zip(extra, ev)))
+                row = {c: np.full(len(pts), vals[c], dtype=object if isinstance(vals[c], str) else None)
+                       for c in key + extra}
+                row[x] = pts
+                for o in outs:
+                    row[o] = fits[o](pts, ext, desc) if fits[o] is not None else np.full(len(pts), np.nan)
                 frames.append(pd.DataFrame(row))
         for reason, keys in dropped.items():
             for d in keys:

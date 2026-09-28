@@ -327,3 +327,15 @@ mode = "stat"
     assert new.version == "0.2" and new.nodes
     after, _ = D.read_cache_file(new.cache_file, new.format)
     np.testing.assert_allclose(after["dE"].to_numpy(), frame_now["dE"].to_numpy())
+
+
+def test_align_broadcasts_an_operand_with_fewer_inputs(session):
+    # ref has no n, so the same reference curve is used for every n
+    session.define("ref", "mean(resample(a.E, grid=linspace(0.05, 1.0, 20)), n)")
+    r = session.eval("a.E - ref", where="U=1.0")
+    df = r.to_pandas()
+    assert str(r.type).startswith("[U, n, T")
+    assert sorted(df["n"].unique()) == [0.5, 1.0]
+    # E = T^2 - U*n, so E - mean over n of E = -U*(n - 0.75)
+    for n, g in df.groupby("n"):
+        np.testing.assert_allclose(g["value"], -(n - 0.75), atol=2e-3)

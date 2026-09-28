@@ -157,6 +157,12 @@ Most 0.1 scripts run unchanged. These are the differences you might notice:
   print their own line.
 - **Refresh messages** say "keys" for results with no axis, and "recomputed
   all N" when the whole dataset was recomputed.
+- **A missing dataset file** listed in `[datasets]` gives a warning when the
+  project loads, and is skipped. In 0.1 it stopped the load, so a script
+  that saves its datasets couldn't run again after `results/` was deleted.
+- **`resample` onto a grid with more inputs** broadcasts the field along
+  them. So `dmft.E - ref.E`, with `ref.E : [U, J, T → E]`, compares every n
+  against the same reference curve, even when T needs aligning.
 
 ## 4. Moving 0.1 files over
 

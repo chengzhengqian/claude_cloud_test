@@ -265,14 +265,19 @@ Numeric errors, like `log` of a negative number, give a missing value.
 All of these take an input x of F. Write K = I − {x}. Each works on every
 curve of F separately (1.2).
 
-**`resample(F, along, grid, method, extrapolate, fewpoints)`** `: [I → O]`
+**`resample(F, along, grid, method, extrapolate, fewpoints)`** `: [I ∪ J → O]`
 
-- `grid : [J → ]` is a point set with x in J, and J − {x} a subset of K.
-- For each key k of F, and each grid point g that agrees with k on
-  J − {x}, the result has the point `k` with `x = g.x`. Its outputs are
-  the curve's interpolant evaluated at `g.x`.
+- `grid : [J → ]` is a point set with x in J.
+- For each key k of F, and each grid point g that agrees with k on the
+  inputs they share, the result has the point `k ∪ g`. Its outputs are the
+  curve's interpolant evaluated at `g.x`.
 - If the grid lacks some inputs of K, it applies to every curve regardless
-  of those inputs. If J has an input that F doesn't, that's an error.
+  of those inputs.
+- If the grid has inputs that F doesn't, F is broadcast along them: each
+  grid point uses the curve of F that matches it on F's own inputs. This
+  is what `align` needs when one operand has fewer inputs, as in
+  `dmft.E - ref.E` with `ref.E : [U, J, T → E]`. The overlap grid has
+  (U, J, n, T), and the reference curve is resampled once for each n.
 
 **`deriv(F, along, order, method, fewpoints)`** `: [I → O]`
 

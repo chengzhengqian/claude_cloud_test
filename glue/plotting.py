@@ -54,7 +54,7 @@ def parse_plot(p, text=""):
         if p.accept_word("vs"):
             spec.vs = p.expect_name("an x name after vs")
         elif p.accept_word("by"):
-            spec.by = [p.expect_name("a coordinate after by")]
+            spec.by = [p.expect_name("an input after by")]
             while p.at_op(",") and _comma_then_plain_name(p):
                 p.next()
                 spec.by.append(p.expect_name())

@@ -22,7 +22,7 @@ SPEC_VERSION = (0, 2)
 def check_version(data, path):
     v = data.get("glue")
     if v is None:
-        raise GlueError(f"{path}: missing `glue = \"0.1\"` version line")
+        raise GlueError(f"{path}: missing `glue = \"0.2\"` version line")
     try:
         major, minor = (int(p) for p in str(v).split(".")[:2])
     except ValueError:
@@ -93,7 +93,7 @@ def match_selector(sel, value, ctype="float", digits=10):
     op = sel.op
     if op == "range":
         if ctype == "str":
-            raise GlueError(f"a range doesn't work on string coordinate {sel.name}")
+            raise GlueError(f"a range doesn't work on the string input {sel.name}")
         return (sel.lo is None or value >= sel.lo) and (sel.hi is None or value <= sel.hi)
     target = sel.value
     if ctype != "str" and isinstance(target, str):
@@ -476,7 +476,7 @@ class SourceTable:
                         raise GlueError(f"{chunk.path}: column {c} has values that aren't numbers") from None
             for c in self.content_coords:
                 if c not in df.columns:
-                    raise GlueError(f"{chunk.path}: coordinate column {c} not found")
+                    raise GlueError(f"{chunk.path}: input column {c} not found")
                 if self.ctype(c) == "float":
                     df[c] = df[c].astype(float).round(self.digits(c)) + 0.0
                 elif self.ctype(c) == "int":
@@ -1062,7 +1062,7 @@ def _load_field(table, data, path, locator):
                 inputs.append(c)
         axis = curves.get("x")
         if axis in inputs:
-            raise GlueError(f"{path}: {axis} can't be both a coordinate and x")
+            raise GlueError(f"{path}: {axis} can't be both in by and x")
         if axis:
             inputs.append(axis)
         outputs = list(curves["y"]) if "y" in curves else None

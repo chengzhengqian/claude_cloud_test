@@ -1,9 +1,10 @@
-# glue usage reference (version 0.1)
+# glue usage reference (version 0.2)
 
 This is the complete reference for using glue: the files you write, the
 expression language, every operation, every shell command, settings, and the
-Python API. For the design reasons behind these rules, see
-[spec.md](spec.md).
+Python API. The exact rules are in [spec.md](spec.md), and the meaning of
+each operation is defined in [core.md](core.md). [changes-0.2.md](changes-0.2.md)
+lists what changed from 0.1.
 
 Contents
 
@@ -24,7 +25,7 @@ Contents
 15. [Python API](#15-python-api)
 16. [Files glue creates](#16-files-glue-creates)
 17. [Error messages and fixes](#17-error-messages-and-fixes)
-18. [Limits of version 0.1](#18-limits-of-version-01)
+18. [Limits of version 0.2](#18-limits-of-version-02)
 
 ---
 
@@ -43,13 +44,17 @@ data/dmft/U_1.0/J_0.2/n_0.5.dat
 ```
 $ glue
 > guess data/dmft name=dmft
-  48 files matched, coordinates: U, J, n
+  48 files matched, path inputs: U, J, n
   2 columns in U_1.0/J_0.0/n_0.8.dat (names from its header comment)
 
-  glue = "0.1"
+  glue = "0.2"
   kind = "table"
   name = "dmft"
   ...
+  [field]
+  inputs = ["U", "J", "n", "T"]
+  outputs = ["E"]
+  axis = "T"
 ```
 
 **Step 2.** Write it, or create it directly:
@@ -82,18 +87,25 @@ A complete worked example is in `examples/hubbard/`.
 | Thing | What it is | Where it lives |
 |---|---|---|
 | **Table** | A description of raw data: where the files are, what the columns mean. | `kind = "table"` TOML file |
-| **Project** | A collection of tables, views, and datasets, with shared settings. | `kind = "project"` TOML file |
-| **View** | A named expression in the project file. It's computed each time it's used. | `[views]` in the project file |
+| **Project** | A collection of tables, views, calcs, and datasets, with shared settings. | `kind = "project"` TOML file |
+| **View** | A named expression in the project file. It's computed each time it's used, with the current settings. | `[views]` in the project file |
 | **Variable** | A named expression in the current session only. | typed in the shell |
-| **Dataset** | A saved result: the data, plus the recipe that made it. | `kind = "dataset"` TOML file + cache file |
+| **Calc** | A saved calculation with no data. Unlike a view, its settings are fixed. | `kind = "calc"` TOML file |
+| **Dataset** | A saved result: the data, plus the calculation that made it. | `kind = "dataset"` TOML file + cache file |
 
-Every table, view, variable, and dataset is used the same way in
+Every table, view, variable, calc, and dataset is used the same way in
 expressions.
 
-Data is organized as **curves**. In `U_{U}/J_{J}/n_{n}.dat`, the values U, J,
-n are **coordinates**. Each combination of coordinates is one curve, and
-that combination is its **curve key**. Inside a curve, T is the **x column**
-and E is a **value column**.
+Every value is a **field**, written `[inputs → outputs]`: the inputs
+determine the outputs. In `U_{U}/J_{J}/n_{n}.dat` with columns T and E, the
+table is `[U, J, n, T → E]`. U, J, n, and T are **inputs**, and E is an
+**output**. T is the table's **axis**, the default input for operations like
+`d` and `max`.
+
+A **curve** is the set of points with the same U, J, n, and those values are
+its **curve key**. Each curve has its own T points. That makes T **ragged**:
+to combine two tables along T, glue interpolates them onto a common grid.
+U, J, n are **exact**: they're matched by value.
 
 ---
 
@@ -102,7 +114,7 @@ and E is a **value column**.
 A table file describes one source of raw data.
 
 ```toml
-glue = "0.1"                      # required: spec version
+glue = "0.2"                      # required: spec version
 kind = "table"                    # required
 name = "dmft"                     # optional, default is the file name
 description = "DMFT energy"       # optional
@@ -116,8 +128,10 @@ pattern = "U_{U}/J_{J}/n_{n}.dat"
 format = "text"
 columns = ["T", "E"]
 
-[curves]                          # how rows form curves
-x = "T"
+[field]                           # the table's type
+inputs = ["U", "J", "n", "T"]
+outputs = ["E"]
+axis = "T"
 
 [columns.T]                       # optional metadata per column
 unit = "t"
@@ -128,7 +142,7 @@ owner = "me"
 ```
 
 Allowed top-level keys: `glue`, `kind`, `name`, `description`, `source`,
-`curves`, `columns`, `meta`. Any other key is an error, so typos are caught.
+`field`, `curves` (the 0.1 form of `field`), `columns`, `meta`. Any other key is an error, so typos are caught.
 Keys starting with `x_` are ignored everywhere, so you can use them for your
 own notes.
 
@@ -139,7 +153,7 @@ own notes.
 | `locator` | no | `"glob"` (the default). |
 | `root` | no | Folder the pattern starts from, relative to this TOML file. Default: the TOML file's folder. `${VAR}` and `~` are expanded. |
 | `pattern` | yes | Path template, see below. |
-| `constants` | no | Coordinates with the same value for every file, like `{ method = "dmft" }`. |
+| `constants` | no | Inputs with the same value for every file, like `{ method = "dmft" }`. List them in `[field].inputs`. |
 | `reader` | yes | The `[source.reader]` table, see 3.4. |
 
 **Path templates.**
@@ -167,8 +181,8 @@ with `*`), their rows are joined in path order.
 | `rename` | no | `{ db_name = "glue_name" }`. |
 | `constants` | no | As for glob. |
 
-A SQLite table has no path, so its coordinates must be listed in
-`[curves].by`. Filters on coordinates and x become a `WHERE` clause, so only
+A SQLite table has no path, so its inputs are columns of the query, listed
+in `[field].inputs`. Filters on inputs become a `WHERE` clause, so only
 matching rows are fetched.
 
 ```toml
@@ -177,9 +191,10 @@ locator = "sqlite"
 file = "../data/qmc.db"
 query = "SELECT u AS U, j AS J, n, 1.0 / beta AS T, energy AS E, energy_err AS dE FROM runs"
 
-[curves]
-by = ["U", "J", "n"]
-x = "T"
+[field]
+inputs = ["U", "J", "n", "T"]
+outputs = ["E"]                   # dE comes along as E's error
+axis = "T"
 
 [columns.E]
 error = "dE"
@@ -227,15 +242,18 @@ Details:
 - `order = "rows"` means values are stored row after row. `"columns"` means
   each column is stored in full, one after another.
 
-### 3.5 `[curves]`
+### 3.5 `[field]`
 
 | Key | Default | Meaning |
 |---|---|---|
-| `by` | all path coordinates | Columns that identify a curve. List content columns here if a coordinate is stored inside the file (always needed for SQLite). |
-| `x` | none | The x column. Leave it out for a **keyed table**. |
-| `y` | all other columns | The value columns. Error columns are left out automatically. |
+| `inputs` | required | Every path placeholder and constant, plus any content columns that are inputs, like T. For SQLite, the columns that identify a point. |
+| `outputs` | every other column | The outputs. An output's error column comes with it. |
+| `axis` | the only content input, if there's one | The default input for `d`, `int`, `max`, `argmax`, and so on. Leave it out for a **keyed table**. |
+| `exact` | `[]` | Treat the axis as exact, for data where every file uses the same points. Then it's matched by value, with no interpolation. |
 
-**Keyed tables.** A table without `x` has exactly one row per curve key. Use
+Every input except the axis is exact. Path inputs are always exact.
+
+**Keyed tables.** A table without an axis has exactly one row per key. Use
 it for summary files, like one gap value per run:
 
 ```toml
@@ -245,23 +263,59 @@ pattern = "U_{U}/J_{J}/n_{n}.dat"
 
 [source.reader]
 columns = ["gap"]
+
+[field]
+inputs = ["U", "J", "n"]
 ```
 
 In expressions its values act as a constant along each matching curve:
 `dmft.E / gap.gap`.
 
+**Fixing conventions in the table.** When one source uses other names or
+units, fix it once in its table, so every expression sees the same thing:
+
+```toml
+[source]
+pattern = "u_{u}/J_{J}/n_{n}.dat"      # this code writes u = U / 2
+
+[source.reader]
+columns = ["T", "E_D"]
+
+[field]
+inputs = ["U", "J", "n", "T"]
+outputs = ["E"]
+axis = "T"
+
+[field.transform]                      # replace input u with U
+U = { from = "u", formula = "u * 2.0" }
+
+[field.map]                            # compute output E from column E_D
+E = "E_D * 2.0"
+```
+
+- `[field.transform]` replaces an input. A formula that only uses path
+  inputs and numbers is applied when the index is built, so `where U=2.0`
+  still skips files without opening them.
+- `[field.map]` computes outputs from columns. Columns a map uses aren't
+  outputs themselves.
+- For a plain rename, give the placeholder or column the name you want:
+  `pattern = "u_{U}/..."`, or `columns = ["T", "E"]`.
+
+**`[curves]`** is the 0.1 form, and is still read: `by` and the path
+placeholders are the inputs, `x` is the axis, and `y` is the outputs.
+
 ### 3.6 `[columns.NAME]`
 
 | Key | Applies to | Meaning |
 |---|---|---|
-| `type` | any | `"float"` (default), `"int"`, or `"str"`. For path coordinates the placeholder decides, and the two must agree. |
+| `type` | any | `"float"` (default), `"int"`, or `"str"`. For path inputs the placeholder decides, and the two must agree. |
 | `unit` | any | Shown in plot labels and `info`. |
 | `label` | any | Display name for plot axes. |
 | `description` | any | Free text. |
-| `digits` | float coordinates | Decimal places used to match coordinate values. Default 10. |
-| `error` | value columns | Name of the column that holds this column's error bars. |
+| `digits` | float inputs | Decimal places used to match input values. Default 10. |
+| `error` | outputs | Name of the column that holds this column's error bars. |
 
-Coordinates are rounded to `digits` decimal places when read. So `0.1` from a
+Float inputs are rounded to `digits` decimal places when read. So `0.1` from a
 path and `0.1000000000001` from SQLite are the same curve.
 
 ---
@@ -269,7 +323,7 @@ path and `0.1000000000001` from SQLite are the same curve.
 ## 4. Project files
 
 ```toml
-glue = "0.1"
+glue = "0.2"
 kind = "project"
 name = "hubbard"
 description = "..."
@@ -286,6 +340,9 @@ prefix = "old_"
 dE  = "dmft.E - ed.E"
 C   = { expr = "d(dmft.E, T)", unit = "1", label = "C", description = "specific heat" }
 dEc = { expr = "dmft.E - ed.E", method = "cubic", grid = "overlap(n=500)" }
+
+[calcs]
+dE_frozen = "calcs/dE_frozen.toml"
 
 [datasets]
 dE_fine = "results/dE_fine.toml"
@@ -313,20 +370,25 @@ notes = "..."
 | Section | Meaning |
 |---|---|
 | `[tables]` | Name → table file (a string, or `{ file = "..." }`). The name here wins over the table file's own `name`. |
-| `[[include]]` | Load another project's tables, views, and datasets with a name prefix. Its settings aren't used. Names inside its views are prefixed too. |
-| `[views]` | Name → expression, or a table with `expr` and optional `unit`, `label`, `description`, and any setting from section 10. |
-| `[datasets]` | Name → dataset file. `save` adds entries here for you. |
+| `[[include]]` | Load another project's tables, views, calcs, and datasets with a name prefix. Its settings aren't used. Names inside its views are prefixed too. |
+| `[views]` | Name → expression, or a table with `expr` and optional `unit`, `label`, `description`, and any setting from section 10. `save NAME --view` adds entries here. |
+| `[calcs]` | Name → calc file. `save NAME --recipe-only` adds entries here. |
+| `[datasets]` | Name → dataset file. `save` adds entries here for you. A file that doesn't exist gives a warning and is skipped. |
 | `[settings]` | Project defaults for any setting in section 10. |
 | `[plot]` | Plot defaults: `backend`, `style`, `cmap`, `size`, `save_script`. |
 | `[plugins]` | Python modules that register custom operations. `path` is added to Python's import path, relative to the project. |
 | `[meta]` | Free-form notes. |
 
-Names of tables, views, and datasets must be unique within a project, use
-letters, digits, and `_`, and not be a reserved word (section 7.2).
+Names of tables, views, calcs, and datasets must be unique within a project,
+use letters, digits, and `_`, and not be a reserved word (section 7.2).
+
+A name is only a label. glue knows a table by what it reads, so the same
+files under two names share cached values, and two tables called `dmft` in
+different projects are never confused.
 
 A view evaluates with the current settings, except for settings the view
 sets itself. So `set method cubic` in the shell changes a plain view's
-result. A dataset's settings are fixed when it's saved.
+result. A calc's or dataset's settings are fixed when it's saved.
 
 **Plugins run Python code.** The first time you load a project with
 `[plugins]`, the shell asks whether to trust it and remembers your answer in
@@ -334,73 +396,91 @@ result. A dataset's settings are fixed when it's saved.
 
 ---
 
-## 5. Dataset files
+## 5. Dataset and calc files
 
-`save` writes these. You normally don't write them by hand.
+`save` writes these. You normally don't write them by hand. A dataset holds
+the calculation as a tree of core operations, one TOML table per node. Each
+node has an id made from its operation, its parameters, and the ids of its
+inputs, so the same calculation always gets the same ids.
 
 ```toml
-glue = "0.1"
+glue = "0.2"
 kind = "dataset"
-name = "dE_fine"
-created = 2026-09-27T14:03:00Z
-tool = "glue 0.1.0"
+name = "Tpeak"
+created = 2026-09-28T00:17:19Z
+tool = "glue 0.2.0"
 pinned = false
 description = ""
 
+[type]                          # the result's field type
+inputs = ["U", "J", "n"]
+outputs = ["Tpeak"]
+exact = ["U", "J", "n"]
+
 [recipe]
-expr = "dmft.E - ed.E"          # self-contained: views and variables are expanded
-source_expr = "dE"              # what was typed
-where = ""                      # selection used when saving
+lib = "glue-core 1"             # version of the operation set
+surface = "argmax(C)"           # what was typed, for people
+root = "8939286b0804"           # the node whose value this is
 
-[recipe.inputs]
+[recipe.inputs]                 # where each leaf's table file is
 dmft = "../tables/dmft.toml"
-ed = "../tables/ed.toml"
 
-[recipe.settings]
-method = "pchip"
-grid = "overlap(n=400)"
-extrapolate = "nan"
+[recipe.nodes.fafeac3f54c2]
+op = "source"
+def = "8bb4786c839b"            # what the table reads
 duplicates = "mean"
+digits = { U = 10, J = 10, n = 10, T = 10 }
+table = "dmft"
+name = "dmft"
+
+[recipe.nodes.02455766edb9]
+op = "deriv"
+of = "804fda7cc31d"
+along = "T"
+order = 1
+method = "pchip"
 fewpoints = "linear"
-unmatched = "drop"
-nan_rows = "drop"
 
-[curves]
-by = ["U", "J", "n"]
-x = "T"
-y = ["dE_fine"]
-
-[columns.dE_fine]
-unit = "t"
+# ... more nodes ...
 
 [cache]
-file = "dE_fine.parquet"
+file = "Tpeak.parquet"
 format = "parquet"
 sha256 = "..."
-rows = 17600
-curves = 44
+points = 48
+curves = 48
 dropped = 0
 
 [fingerprint]
 mode = "stat"
 dmft = "sha256:..."
-ed = "sha256:..."
 ```
+
+Every parameter that affects the result is written into the node that uses
+it, including the settings that were in effect. So a dataset means the same
+thing whatever your settings are later. `why NAME` prints the tree in a
+readable form. [core.md](core.md) section 2 defines each `op`.
+
+A **calc** file is the same, with `kind = "calc"` and no `[cache]` or
+`[fingerprint]`. `save NAME --recipe-only` writes one to `calcs/NAME.toml`.
 
 **What you can edit by hand:**
 
 | Field | Safe to edit? |
 |---|---|
 | `pinned`, `description`, `[meta]` | Yes. `refresh` keeps them. |
-| `[columns.*].unit`, `label` | Yes, it only affects display. |
-| `[recipe]` (expression, inputs, settings) | Yes, but then run `refresh NAME --full`. Status only compares inputs, so it won't notice a recipe edit. |
-| `[cache]`, `[fingerprint]` | No. glue manages them. |
+| `[recipe.nodes]` | Only if you know the operations. Node ids are checked when the file loads, and an edited node gets a new id, with a warning. Then run `refresh NAME --full`. |
+| `[type]`, `[cache]`, `[fingerprint]` | No. glue manages them. |
 
 `refresh` rewrites the whole dataset file, so comments in it are lost. Keep
 notes in `description` or `[meta]`.
 
 A dataset saved from data registered in Python has `reproducible = false`
 and no `[recipe]`. It can be loaded and used, but not checked or refreshed.
+
+**0.1 datasets** have `[recipe].expr` and `[recipe.settings]` instead of
+nodes. They load and work as before. The first `refresh` translates them
+into a tree and writes the file as 0.2.
 
 ---
 
@@ -414,7 +494,8 @@ and no `[recipe]`. It can be loaded and used, but not checked or refreshed.
 | Create a table file | `new table NAME pattern="..." columns=["T", "E"] [root="..."] [x=T] [format=text] [file=PATH]`. It writes the file, loads it, and adds it to the project's `[tables]`. |
 | Edit any file in your editor | `edit NAME` opens the table or dataset file behind NAME (for a view, the project file) in `$EDITOR`, then reloads everything. |
 | Edit by hand, outside glue | Edit the TOML, then `reload` in the shell. |
-| Turn a variable into a view | `save NAME --recipe-only` writes it to the project's `[views]`. |
+| Turn a variable into a view | `save NAME --view` writes its expression to the project's `[views]`. |
+| Freeze a calculation without data | `save NAME --recipe-only` writes `calcs/NAME.toml` and adds it to `[calcs]`. |
 | Save a result as a dataset | `save NAME [as PATH] ...` writes the dataset files and adds it to `[datasets]`. |
 | Pin or unpin a dataset | `pin NAME`, `unpin NAME` set `pinned` in the dataset file. |
 | Change settings for good | Put them in the project's `[settings]`. `set KEY VALUE` only lasts for the session. |
@@ -428,7 +509,8 @@ including comments, stays as it is.
 | Command | Change to `project.toml` |
 |---|---|
 | `save NAME` | Adds `NAME = "results/NAME.toml"` under `[datasets]`. If a view has the same name, removes it from `[views]`, since the dataset's recipe keeps the expression. |
-| `save NAME --recipe-only` | Adds `NAME = "expr"` under `[views]`, or an inline table if the variable has settings. |
+| `save NAME --view` | Adds `NAME = "expr"` under `[views]`, or an inline table if the variable has settings. |
+| `save NAME --recipe-only` | Adds `NAME = "calcs/NAME.toml"` under `[calcs]`. |
 | `new table NAME ...` | Adds `NAME = "NAME.toml"` under `[tables]`. |
 
 If a section doesn't exist yet, it's added at the end of the file.
@@ -438,7 +520,8 @@ If a section doesn't exist yet, it's added at the end of the file.
 Files are checked when they're loaded:
 
 - Unknown keys are errors, with the list of allowed keys.
-- `glue = "0.1"` must be present. A newer minor version loads with a warning.
+- `glue = "0.2"` (or `"0.1"`) must be present. A newer minor version loads
+  with a warning.
   A different major version is an error.
 - Missing required keys (`pattern`, `columns` for text files, `file` for
   SQLite, and so on) are errors that name the file.
@@ -452,32 +535,37 @@ A quick check after editing a table: `reload`, then `info NAME`, then
 
 ## 7. The expression language
 
-### 7.1 Kinds of values
+### 7.1 Types
 
-Every expression has one of these kinds:
+Every expression is a field `[inputs → outputs]`. `info NAME` and
+`explain` print the type. Some common shapes:
 
-| Kind | Shape | Examples |
+| Shape | Type | Examples |
 |---|---|---|
-| **Scalar** | one number | `2.5` |
-| **Keyed** | one number per curve key | `gap.gap`, `max(dmft.E)`, `dmft.U` |
-| **Curves** | one curve y(x) per curve key | `dmft.E`, `d(dmft.E, T)` |
-| **Table** | several columns | `dmft` |
+| curves | `[U, J, n, T:ragged → E]` | `dmft.E`, `d(dmft.E, T)` |
+| one value per key | `[U, J, n → value]` | `gap.gap`, `max(dmft.E)` |
+| a number | `[ → value]` | `2.5` |
+| several outputs | `[U, J, n, T:ragged → E, S]` | `dmft`, when it has two outputs |
 
-A Table can be shown but not used in arithmetic. Pick a column, as in
-`dmft.E`.
+`:ragged` marks an input whose points differ from curve to curve. The other
+inputs are exact.
+
+A field with several outputs can be shown and plotted, but not used in
+arithmetic. Pick an output, as in `dmft.E`. A field with one output can be
+used bare: `dmft - ed.E` works when `dmft` has only E.
 
 ### 7.2 Lexical rules
 
 - Names: letters, digits, `_`, not starting with a digit.
 - Numbers: `1`, `0.5`, `.5`, `1e-3`, `2.0E+4`.
-- Strings: `"..."` or `'...'`. Used for string coordinates, labels, and file
+- Strings: `"..."` or `'...'`. Used for string inputs, labels, and file
   names.
 - Comments: `#` to the end of the line.
 - A line ending in `\` continues on the next line.
 - Reserved words, which can't be used as names:
   `load reload guess new edit scan ls info values show explain del save
-  export status refresh pin unpin plot set unset run py help quit with
-  where vs by to as`.
+  export status refresh pin unpin invalidate why gc plot set unset run py
+  help quit with where vs by to as`.
 
 ### 7.3 Operators
 
@@ -486,7 +574,7 @@ From tightest to loosest binding:
 | Operator | Meaning | Example |
 |---|---|---|
 | `t.c` | column `c` of `t` | `dmft.E` |
-| `y[...]` | select curves or an x range | `dmft.E[U=2.0, T=0.1:0.5]` |
+| `y[...]` | keep matching points | `dmft.E[U=2.0, T=0.1:0.5]` |
 | `^`, `**` | power (right-associative) | `T^2` |
 | `-y`, `+y` | negation | `-dmft.E` |
 | `*`, `/` | multiply, divide | `dmft.E / n` |
@@ -502,25 +590,24 @@ A bare name is looked up in this order:
 
 1. session variables
 2. views
-3. tables and datasets
-4. coordinate and x names of the tables in the same expression
+3. tables, calcs, and datasets
+4. input names of the other fields in the same expression
 
-So in `dmft.E / n`, `n` is the coordinate n of each dmft curve. In
-`C / T`, `T` is the x value of C at each point.
+So in `dmft.E / n`, `n` is the input n of each dmft point. In `C / T`, `T`
+is the T value of C at each point.
 
-If a name is both a table and a coordinate in the same expression, that's an
+If a name is both a table and an input in the same expression, that's an
 error. Write `dmft.n` instead.
 
 Column access `t.c`:
 
 | `c` is | Result |
 |---|---|
-| a value or error column | Curves (Keyed for a keyed table) |
-| a coordinate | Keyed: the coordinate value per key |
-| the x column | Curves whose values are x itself |
+| an output | the field with only that output: `dmft.E : [U, J, n, T → E]` |
+| an input | its values as an output named `value`, on the same points: `dmft.U : [U, J, n, T → value]` |
 
-A variable, view, or dataset with one value column can be used bare:
-`max(dE)` is the same as `max(dE.dE)`.
+Anything with one output can be used bare: `max(dE)` is the same as
+`max(dE.dE)`.
 
 ### 7.5 Selection
 
@@ -534,16 +621,17 @@ A variable, view, or dataset with one value column can be used bare:
 | `U<0.3`, `U<=0.3`, `U>0.1`, `U>=0.1` | comparison |
 | `T=0.1:0.5` | range, both ends included |
 | `T=:0.5`, `T=0.1:` | open range |
-| `model="hubbard"` | string coordinate |
+| `model="hubbard"` | string input |
+| `E<0` | a condition on an output |
 
-Selectors can name coordinates and the x column. Filtering on value
-columns, like `E<0`, isn't supported yet.
+`y[...]` can name inputs and outputs. `where ...` can only name the
+result's inputs.
 
 - `y[...]` applies where it's written. `integral(y[T=0.1:0.5], T)` integrates
   only over that range.
 - `where ...` at the end of a statement applies to the result, and is passed
-  to every input that has that coordinate. It never changes the result, but
-  it decides which files are read.
+  down to every operand that has that input. It never changes the result,
+  but it decides which files are read.
 
 ### 7.6 `with` settings
 
@@ -560,48 +648,52 @@ expression, `using(expr, KEY=VALUE)` does the same for one part.
 
 ### 7.7 How values combine
 
-This table covers `+ - * / ^` and every operation with more than one input:
+These rules cover `+ - * / ^` and every operation with more than one
+operand.
 
-| | Scalar | Keyed | Curves |
-|---|---|---|---|
-| **Scalar** | Scalar | Keyed | Curves |
-| **Keyed** | Keyed | Keyed: keys matched | Curves: the keyed value is constant along each curve |
-| **Curves** | Curves | Curves: as on the left | Curves: row-aligned or aligned, see below |
+**Inputs are matched by name.** The result has the inputs of both sides.
+An input that only one side has is broadcast. For example, `gap.gap` has
+(U, J, n), so `dmft.E / gap.gap` uses each run's gap along its whole
+curve. A reference `ref.E` with only (U, J, T) compared to `dmft.E` with
+(U, J, n, T) uses the same reference curve for every n. A number is used
+for every point.
 
-Table in arithmetic is always an error.
+**Exact inputs are matched by value.** Keys that exist on only one side are
+dropped and reported, or with `unmatched=error` the statement stops.
 
-**Matching keys.** Two inputs are matched on the coordinates they share.
-The result has all coordinates of both. A coordinate that only one side has
-is broadcast. For example, a reference `ref.E` with only (U, J) compared to
-`dmft.E` with (U, J, n) uses the same reference curve for every n.
+**A shared ragged input is aligned.** For `dmft.E - ed.E`, T is ragged, and
+the two tables have different T points. So for each matched key, both
+curves are sorted by T, cleaned (`duplicates`), fitted (`method`,
+`fewpoints`), and evaluated on a grid (`grid`, `extrapolate`). The report
+says how many curves were aligned, and with which grid and method.
 
-**Unmatched keys.** Keys that exist on only one side are dropped and
-reported, or with `unmatched=error` the statement stops.
+**Fields that share their points aren't aligned.** That's outputs of the
+same table under the same selection, like `dmft.E * dmft.T`, and anything
+built from them with pointwise operations. The same name used twice
+(`dE - dE`) also shares its points. Repeated x values are fine here.
 
-**Curves with curves.**
+**Choosing what to align.** `with align=[T]` aligns along T. `with
+align=[]` never aligns, so points are matched on exactly equal values. Only
+one input can be aligned at a time. If two shared inputs need it, the
+statement stops and asks you to choose. With `strict=true`, aligning is an
+error unless the grid comes from `with grid=...`, `using(...)`, or
+`resample`.
 
-1. Both must have the same x name, or it's an error.
-2. **Row-aligned** inputs are combined point by point, with no
-   interpolation. That's columns of the same table under the same
-   selection, like `dmft.E * dmft.T`, and anything built from them with
-   elementwise operations. The same name used twice (`dE - dE`) is also
-   row-aligned. Repeated x values are fine here.
-3. **Everything else is aligned.** For each matched pair of curves, both
-   are sorted by x, cleaned (`nan_rows`, `duplicates`), fitted (`method`,
-   `fewpoints`), and evaluated on a grid (`grid`, `extrapolate`). The
-   report says how many curves were aligned, and with which grid and method.
-4. With `strict=true`, step 3 is an error unless the grid comes from a
-   `with grid=...`, `using(...)`, or `resample`.
+**Different axis names.** If one side has T and the other has beta, neither
+is shared, so each is broadcast along the other: you get every pair of
+points. When they mean the same thing, convert one first, with `rename` or
+`transform` (8.11).
 
-**A bare x name** like `T` in `C / T` takes its points from the curve it's
-combined with. `T` alone, or `T` combined only with numbers, is an error.
+**A bare input name** like `T` in `C / T` takes its points from the field
+it's combined with. `T` alone, or `T` combined only with numbers, is an
+error.
 
 **Units.** `+` and `-` keep the unit if both sides have the same unit, or if
 one side is a plain number. Other operations drop it. `save ... unit="..."`
 or a view's `unit` sets it again.
 
-**Result names.** An assignment names the value column: `dE = ...` gives a
-column `dE`. A bare column keeps its name. Other unnamed results are called
+**Result names.** An assignment names the output: `dE = ...` gives an
+output `dE`. A bare column keeps its name. Other unnamed results are called
 `value`.
 
 **Error columns** can be plotted with `errorbars`. They aren't carried
@@ -613,35 +705,45 @@ through operations.
 
 ### 8.1 Summary
 
-| Operation | Input | Result | Settings it uses |
-|---|---|---|---|
-| `+ - * / ^` | any (not Table) | see 7.7 | alignment settings, when aligning |
-| `-y` | any | same | none |
-| `abs sqrt exp log log10 sin cos tan sinh cosh tanh` | any | same | none |
-| `resample(y, grid=, method=)` | Curves | Curves | `grid`, `method`, `extrapolate`, `duplicates`, `nan_rows`, `fewpoints` |
-| `d(y, x, order=, method=, grid=)` | Curves | Curves | `method`, `extrapolate`, `duplicates`, `nan_rows`, `fewpoints` |
-| `int(y, x, method=)` | Curves | Curves | `duplicates`, `nan_rows` (plus `fewpoints` with a spline method) |
-| `integral(y, x, method=)` | Curves | Keyed | same as `int` |
-| `max min mean first last count argmax argmin` | Curves | Keyed | none |
-| `at(y, x=v)`, `y @ x=v` | Curves | Keyed | `method`, `extrapolate`, `duplicates`, `nan_rows` |
-| `at(y, x=[v1, ...])`, `y @ x=[...]` | Curves | Curves | same |
-| `stack(a=y1, b=y2, tag=)` | Curves or Keyed | same | none |
-| `using(y, KEY=VALUE, ...)` | any | same | the ones you set |
-| custom `@glue.op` | see 8.9 | | |
+`x` below is an input name. Where it's optional, the default is the
+field's axis. K stands for the other inputs.
+
+| Operation | Type | Settings it uses |
+|---|---|---|
+| `+ - * / ^` | see 7.7 | alignment settings, when aligning |
+| `-y` | same as `y` | none |
+| `abs sqrt exp log log10 sin cos tan sinh cosh tanh` | same as `y` | none |
+| `resample(y, grid=, method=, along=)` | same inputs | `grid`, `method`, `extrapolate`, `duplicates`, `fewpoints` |
+| `d(y, x, order=, method=, grid=)` | same inputs | `method`, `extrapolate`, `duplicates`, `fewpoints` |
+| `int(y, x, method=)` | same inputs | `duplicates` (plus `fewpoints` with a spline method) |
+| `integral(y, x, method=)` | `[K ∪ {x} → O]` to `[K → O]` | same as `int` |
+| `max min mean sum first last count argmax argmin` | `[K ∪ {x} → O]` to `[K → O]` | none |
+| `at(y, x=v)`, `y @ x=v` | `[K ∪ {x} → O]` to `[K → O]` | `method`, `extrapolate`, `duplicates` |
+| `at(y, x=[v1, ...])`, `y @ x=[...]` | same inputs | same |
+| `stack(a=y1, b=y2, tag=)` | adds the input `tag` | none |
+| `using(y, KEY=VALUE, ...)` | same as `y` | the ones you set |
+| `rename(y, old=new, ...)` | renamed | none |
+| `transform(y, u, v = formula)` | replaces input u with v | alignment settings, if the formula uses another field |
+| `swap(y, x)` | `[K ∪ {x} → y]` to `[K ∪ {y} → x]` | `branches`, `flat_tol` |
+| `legendre(y, x, slope=, result=)` | `[K ∪ {x} → y]` to `[K ∪ {p} → G]` | `method`, `branches`, `flat_tol` |
+| custom `@glue.op` | see 8.14 | |
 
 ### 8.2 Elementwise functions
 
 `abs(y)`, `sqrt(y)`, `exp(y)`, `log(y)` (natural log), `log10(y)`, `sin`,
 `cos`, `tan`, `sinh`, `cosh`, `tanh`.
 
-- Work on Scalar, Keyed, and Curves, and keep row alignment.
+- Work on any field, point by point, and keep its points.
 - `abs` and `-` keep the unit and column name. The others drop both.
 - Invalid values (like `log` of a negative number) give NaN.
 
-### 8.3 `resample(y, grid=GRID, method=METHOD)`
+### 8.3 `resample(y, grid=GRID, method=METHOD, along=x)`
 
 Evaluates each curve on a new grid. Without `grid=` it uses the `grid`
-setting. For one input, `overlap(...)` means the curve's own range.
+setting. For one operand, `overlap(...)` means the curve's own range.
+`along=` resamples along another input instead of the axis, as in
+`resample(y, along=U, grid=linspace(1, 4, 31))`, which interpolates between
+the U values you have.
 
 ```
 resample(dmft.E, grid=logspace(0.01, 1, 300))
@@ -650,8 +752,10 @@ resample(qmc.E, method=smooth(s=0.001), grid=overlap(n=100))
 
 Keeps the unit and column name.
 
-A resampled curve is on a new grid, so combining it with another curve aligns
-them again. To put one side on the other side's points, set the grid on the
+A curve resampled onto `linspace`, `logspace`, or `points` is on a fixed
+grid, so its x becomes exact, and two fields on the same fixed grid are
+matched by value. A curve resampled onto `overlap` is still ragged, so
+combining it with another curve aligns them again. To put one side on the other side's points, set the grid on the
 combination instead:
 
 ```
@@ -663,7 +767,8 @@ Points of `dmft.E` outside the range of `ed.E` then give NaN, because of
 
 ### 8.4 `d(y, x, order=1, method=METHOD, grid=GRID)`
 
-Derivative along x. The second argument must be the x name.
+Derivative along x. The second argument is the input to differentiate
+along. It defaults to the axis.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -682,8 +787,8 @@ The result has no unit.
 ### 8.5 `int(y, x, method=trapz)` and `integral(y, x, method=trapz)`
 
 - `int` gives the cumulative integral, starting at 0 at the first point.
-  The result is Curves.
-- `integral` gives the integral over each whole curve. The result is Keyed.
+  The result has the same inputs.
+- `integral` gives the integral over each whole curve, one value per key.
 - `method=trapz` (the default) uses the trapezoid rule on the data points.
   A spline method name integrates the fitted spline instead.
 
@@ -696,24 +801,37 @@ integral(dmft.E[T=0.1:0.5], T)             # over a range
 
 | Function | Result |
 |---|---|
-| `max(y)`, `min(y)`, `mean(y)` | over the curve's points |
+| `max(y)`, `min(y)`, `mean(y)`, `sum(y)` | over the curve's points |
 | `first(y)`, `last(y)` | at the smallest or largest x |
 | `count(y)` | number of points |
 | `argmax(y)`, `argmin(y)` | the x value at the largest or smallest point (the first one if there's a tie) |
 
 Missing values are ignored. A curve with no points is dropped. `max`, `min`,
-`mean`, `first`, and `last` keep the unit.
+`mean`, `first`, and `last` keep the unit. The result's output is called
+`value`, or the variable's name in an assignment.
 
 ```
 Tpeak = argmax(d(dmft.E, T))
 plot Tpeak vs U by J where n=1.0
 ```
 
+**Reducing along another input.** A second argument names the input to
+reduce along. `mean(y, n)` averages over n, and gives one curve per (U, J).
+Points are grouped by exactly equal values of the other inputs, so when T
+is ragged, put the curves on one grid first:
+
+```
+En = mean(resample(dmft.E, grid=linspace(0.05, 1.0, 100)), n)
+plot En by U where J=0.1
+```
+
 ### 8.7 `at(y, x=v)` and `y @ x=v`
 
 Evaluates each curve at a point, using the current `method` and
-`extrapolate`. A single point gives Keyed. A list gives Curves on those
-points.
+`extrapolate`. A single point removes the input x, so the result has one
+value per key. A list gives curves on those points. On an exact input, like
+`at(dmft.E, U=2.0)`, it picks that value, with no interpolation. To
+interpolate between U values, use `resample(y, along=U, ...)`.
 
 ```
 dmft.E @ T=0.1
@@ -722,9 +840,8 @@ at(dmft.E, T=[0.05, 0.1, 0.2])
 
 ### 8.8 `stack(name1=y1, name2=y2, ..., tag="source")`
 
-Puts families with the same coordinates and x on top of each other, adding a
-string coordinate (`tag`) whose values are the argument names. Nothing is
-interpolated.
+Puts fields with the same inputs on top of each other, adding a string
+input (`tag`) whose values are the argument names. Nothing is interpolated.
 
 ```
 all = stack(dmft=dmft.E, ed=ed.E, tag="method")
@@ -741,7 +858,71 @@ Evaluates `y` with these settings. It's the in-expression version of
 dmft.E - using(ed.E - ref.E, method=linear)
 ```
 
-### 8.10 Custom operations
+### 8.10 `rename(y, old=new, ...)`
+
+Renames inputs or outputs. Use it when two sources call the same thing by
+different names:
+
+```
+rename(old.E, temp=T) - dmft.E       # old calls T temp
+```
+
+### 8.11 `transform(y, u, v = formula)`
+
+Replaces input u with a new input v computed by a formula. Use it to
+rescale or change variables before combining fields:
+
+```
+transform(ed.E, u, U = u * 2.0)          # this code stores U/2 as u
+transform(C, T, t = T / gap.gap)         # T in units of each run's gap
+```
+
+- The formula may use u, the other inputs, the outputs, and numbers.
+  Functions from 8.2, `min`, and `max` work in it.
+- It may use other fields too, like `gap.gap`. They're combined with `y`
+  first, by the rules in 7.7, and dropped afterward.
+- v is exact if the formula uses only exact inputs and numbers. Otherwise
+  it's ragged, and combining the result with another field aligns along v.
+- v may have the same name as u: `transform(y, U, U = U * 2)`.
+- Two points that get the same v value with the same other inputs are an
+  error, since the inputs would no longer determine the outputs.
+
+A transform in an expression is applied after reading, so `where U=2.0` on
+its result reads every file. To skip files, put the transform in the table
+file's `[field.transform]` (3.5).
+
+The scaling collapse in `examples/hubbard` uses the second form: with T in
+units of the gap, the specific heat peaks of all U fall on one curve.
+
+### 8.12 `swap(y, x, branches=error, flat_tol=1e-9)`
+
+Swaps the input x and the only output, so `swap(dmft.E, T)` is T as a
+function of E: `[U, J, n, E → T]`.
+
+- Each curve must be strictly increasing or strictly decreasing, or E
+  wouldn't determine T. Steps smaller than `flat_tol` count as flat.
+- `branches=error` stops at the first curve that isn't monotonic, and names
+  it. `branches=split` splits each curve into monotonic pieces, with a new
+  input `branch` (0, 1, ...).
+- Noise often makes a flat part of a curve non-monotonic. Restrict the
+  range first: `swap(dmft.E[T=0.1:], T)`.
+- The new input E is ragged. Combining the result with another field aligns
+  along E.
+
+```
+TE = swap(dmft.E[T=0.1:], T)
+TE @ E=-0.3                              # the temperature where E = -0.3
+```
+
+### 8.13 `legendre(y, x, slope=p, result=G)`
+
+The Legendre transform along x: `p = dy/dx`, and `G = p x - y` as a
+function of p. For example, from E(T) you get a function of the slope. It
+needs y convex or concave along x, so that p is monotonic. Otherwise it
+stops, or splits with `branches=split`, as for `swap`. `method` sets how
+the derivative is computed.
+
+### 8.14 Custom operations
 
 Register a Python function with `@glue.op`. It's then usable in the shell,
 in views, and in saved recipes.
@@ -755,18 +936,19 @@ def fwhm(x, y):
     return width
 ```
 
-| `kind` | Function signature | Input | Result |
-|---|---|---|---|
-| `elementwise` | `f(y, **options) -> y` | any | same |
-| `curve` | `f(x, y, **options) -> (x, y)` | Curves | Curves |
-| `reduce` | `f(x, y, **options) -> float` | Curves | Keyed |
+| `kind` | Function signature | Type |
+|---|---|---|
+| `elementwise` (or `pointwise`) | `f(y, **options) -> y` | same as `y` |
+| `curve` | `f(x, y, **options) -> (x, y)` | same inputs |
+| `reduce` | `f(x, y, **options) -> float` | `[K ∪ {x} → O]` to `[K → O]` |
 
 Options are passed to the function as keyword arguments, as numbers or
 strings. For `def peak_width(x, y, level=0.5)`, write
 `peak_width(C, level=0.25)`. Put the
-module in the project's `[plugins]`, or register it in Python before use. A
-saved recipe records `module.function@version`, and refresh imports that
-module again.
+module in the project's `[plugins]`, or register it in Python before use.
+`curve` and `reduce` work along the axis, or along `along=NAME`. A saved
+dataset records `module:qualname@version`, as in `physops:fwhm@1`, and
+`refresh` imports that module again.
 
 ---
 
@@ -776,9 +958,9 @@ module again.
 
 | Grid | Points for each matched set of curves |
 |---|---|
-| `overlap(n=200)` or `overlap(200)` | `n` evenly spaced points over the x range all inputs cover |
+| `overlap(n=200)` or `overlap(200)` | `n` evenly spaced points over the x range all operands cover |
 | `overlap(step=0.01)` | points every `step` over that range |
-| `union()` | every x point of every input, within that range |
+| `union()` | every x point of every operand, within that range |
 | `like(EXPR)` | the x points of `EXPR`'s matching curve |
 | `linspace(a, b, n)` | `n` evenly spaced points from `a` to `b`, the same for every curve |
 | `logspace(a, b, n)` | `n` log-spaced points from `a` to `b`. `a` and `b` are the actual end values, not exponents. |
@@ -803,7 +985,7 @@ what happens there.
 Before fitting, every curve is:
 
 1. sorted by x,
-2. cleaned of rows with a missing x or y (`nan_rows`),
+2. cleaned of rows with a missing x or y,
 3. cleaned of repeated x values (`duplicates`),
 4. checked for enough points (`fewpoints`).
 
@@ -834,7 +1016,11 @@ Higher levels win:
 | `duplicates` | `error`, `mean`, `first`, `last`, `drop` | `error` | Repeated x within one curve: stop, average, keep the first or last, or drop all copies |
 | `fewpoints` | `linear`, `drop`, `error` | `linear` | Too few points for the method: fall back to linear (needs 2 points, else the curve is dropped), drop the curve, or stop |
 | `unmatched` | `drop`, `error` | `drop` | Curve keys on only one side of an operation |
-| `nan_rows` | `drop`, `error` | `drop` | Rows with a missing x or y |
+| `nan_rows` | `drop`, `error` | `drop` | Rows with a missing x or y. Accepted, but 0.2 always drops them. |
+| `align` | `auto`, `[]`, `[NAME]` | `auto` | Which input to align along when combining fields (7.7). `[]` never aligns. |
+| `branches` | `error`, `split` | `error` | What `swap` and `legendre` do with a curve that isn't monotonic (8.12) |
+| `flat_tol` | a number | `1e-9` | In `swap`, steps smaller than this count as flat |
+| `disk_cache` | `true`, `false` | `false` | Keep expensive intermediate values in `.glue/cache/` for later sessions (13.4) |
 | `strict` | `true`, `false` | `false` | Require an explicit grid for alignment |
 | `report` | `short`, `full`, `off` | `short` | `full` also lists every affected curve key |
 | `fingerprint` | `stat`, `hash` | `stat` | How saved datasets detect changed inputs (13.3) |
@@ -847,9 +1033,8 @@ Higher levels win:
 | `plot.size` | `(width, height)` in inches | `(6, 4)` | |
 | `plot.save_script` | `true`, `false` | `false` | Also write `FIG.glue` next to each saved figure, to recreate it |
 
-`save` records the settings that affect results (`method`, `grid`,
-`extrapolate`, `duplicates`, `fewpoints`, `unmatched`, `nan_rows`) in the
-dataset's recipe.
+`save` writes the settings that affect the result into the nodes of the
+saved tree. Changing settings later doesn't change a saved calc or dataset.
 
 ---
 
@@ -874,22 +1059,22 @@ current folder when typed. Output paths (`plot > FILE`, `save ... as`,
 
 | Command | Meaning | Example |
 |---|---|---|
-| `load FILE` | Load a project, table, or dataset file. | `load project.toml` |
+| `load FILE [as NAME]` | Load a project, table, calc, or dataset file. `as NAME` gives a single file another name. For a project, NAME is a prefix for all its names. | `load project.toml`, `load ../old/project.toml as old` |
 | `reload` | Reload every loaded file from disk. Keeps variables and `set` settings. | `reload` |
 | `guess DIR [name=NAME]` | Suggest a table file for a folder tree. Prints TOML and writes nothing. | `guess data/ed name=ed` |
-| `new table NAME pattern="..." columns=[...] [root="..."] [x=NAME] [format=text] [file=PATH]` | Write a table file, load it, and add it to the project. `columns` may also be `"T,E"`. `x` defaults to the first column. | `new table ed pattern="U_{U}/n_{n}.dat" columns=["T","E"] root="data/ed"` |
+| `new table NAME pattern="..." columns=[...] [root="..."] [x=NAME] [format=text] [file=PATH]` | Write a table file with a `[field]` section, load it, and add it to the project. `columns` may also be `"T,E"`. `x` is the axis, and defaults to the first column. | `new table ed pattern="U_{U}/n_{n}.dat" columns=["T","E"] root="data/ed"` |
 | `edit NAME` | Open the file behind NAME in `$EDITOR`, then reload. | `edit dmft` |
-| `scan [NAME]` | Rebuild the file index and report files, skipped files, and coordinate values. | `scan dmft` |
+| `scan [NAME]` | Rebuild the file index and report files, skipped files, and input values. | `scan dmft` |
 
 ### 11.3 Looking at data
 
 | Command | Meaning | Example |
 |---|---|---|
-| `ls` | List tables, views, datasets (with status), and variables. | `ls` |
-| `info NAME` | Source, coordinates and their values, x, value columns, units. For datasets, also recipe, settings, and status. | `info qmc` |
-| `values NAME.COORD` | Distinct values of a coordinate. | `values dmft.U` |
-| `show EXPR [where ...] [with ...] [limit N]` | Compute and print rows. Default `limit 20`. Stops reading once enough rows are found. | `show max(dmft.E) where n=1.0` |
-| `explain STATEMENT` | Show the alignment and interpolation steps and which files and columns would be read, without reading data. Works on expressions, assignments, `plot ...`, and `save NAME`. | `explain plot dE by U where J=0.1, n=1.0` |
+| `ls` | List tables, views, calcs, datasets (with status), and variables. | `ls` |
+| `info NAME` | Type, source, inputs and their values, the axis, outputs, units. For datasets, also the recipe and status. | `info qmc` |
+| `values NAME.INPUT` | Distinct values of an input. | `values dmft.U` |
+| `show EXPR [where ...] [with ...] [limit N]` | Compute and print rows. Default `limit 20`. | `show max(dmft.E) where n=1.0` |
+| `explain STATEMENT` | Show the core tree with each node's type, the filters pushed to the sources, and how many files each source reads, without reading data. Works on expressions, assignments, `plot ...`, and `save NAME`. | `explain plot dE by U where J=0.1, n=1.0` |
 
 ### 11.4 Computing and saving
 
@@ -897,11 +1082,16 @@ current folder when typed. Output paths (`plot > FILE`, `save ... as`,
 |---|---|---|
 | `del NAME` | Remove a variable. | `del tmp` |
 | `save NAME [as PATH] [where ...] [grid=GRID] [format=parquet\|npz] [unit="..."]` | Compute NAME and save it as a dataset (13.1). | `save dE as results/dE_fine grid=overlap(n=400)` |
-| `save NAME --recipe-only` | Write the variable NAME as a view in the project file. No data is saved. | `save rel --recipe-only` |
+| `save NAME --view` | Write the variable NAME as a view in the project file. No data is saved. | `save rel --view` |
+| `save NAME --recipe-only` | Write the calculation tree of NAME to `calcs/NAME.toml`, with no data, and add it to `[calcs]`. | `save rel --recipe-only` |
 | `export EXPR to FILE [where ...] [with ...]` | Write plain data with no recipe. `.csv`, `.parquet`, or `.dat`/`.txt` (one block per curve for gnuplot). | `export dE to out/dE.dat where U=2.0` |
 | `status [NAME]` | Dataset states (13.2). | `status` |
 | `refresh NAME \| --all [--full] [--force]` | Recompute stale datasets (13.3). | `refresh --all` |
 | `pin NAME`, `unpin NAME` | Stop or allow automatic refresh of a dataset. | `pin figure3_data` |
+| `invalidate TABLE [where ...]` | Mark a table's files as changed (13.4). | `invalidate ed where U=2.0` |
+| `invalidate NAME` | Drop a view's or calc's cached values, or mark a dataset for a full recompute. | `invalidate dE_fine` |
+| `why NAME` | Why a dataset is fresh or stale, the tree under it, and its leaves. | `why dE_fine` |
+| `gc` | Delete cached values nothing uses. | `gc` |
 
 ### 11.5 Plotting
 
@@ -951,20 +1141,20 @@ plot Y [, Y ...] [vs X] [by C1 [, C2]] [where SELECTORS] [with OPTIONS] [> FILE]
 
 | Part | Meaning |
 |---|---|
-| `Y` | Any Curves or Keyed expression. `label=Y` sets its legend label: `plot dmft=dmft.E, ed=ed.E`. |
-| `vs X` | For Curves: the x column (the default, and the only choice in 0.1). For Keyed: the coordinate on the horizontal axis. |
-| `by C1` | Color by coordinate C1. |
+| `Y` | Any field with one output. `label=Y` sets its legend label: `plot dmft=dmft.E, ed=ed.E`. |
+| `vs X` | The input on the horizontal axis. The default is the axis. For a field with no axis, any input. Points are drawn with markers when X is exact. |
+| `by C1` | Color by input C1. |
 | `by C1, C2` | Color by C1 and line style by C2. Only with a single `Y`. |
 | `where ...` | Which curves to plot, and x ranges. |
 | `with ...` | Plot options (below) and any setting from section 10. |
 | `> FILE` | Save the figure. The format comes from the extension: `.png`, `.pdf`, `.svg`, ... |
 
-**The free-coordinate rule.** Every coordinate must have one value in the
-plotted data, be listed in `by`, or be the `vs` axis. Otherwise curves for
+**The free-input rule.** Every input must have one value in the plotted
+data, be listed in `by`, or be the `vs` axis. Otherwise curves for
 different values would overlap with the same color and look like one
 dataset, so it's an error that tells you what to add. Shortcuts: if exactly
-one coordinate is left and there's no `by`, it's used as `by`. For Keyed
-values without `vs`, a single free coordinate is used as `vs`.
+one input is left and there's no `by`, it's used as `by`. For a field with
+no axis and no `vs`, a single free input is used as `vs`.
 
 **Colors and legends.**
 
@@ -973,7 +1163,7 @@ values without `vs`, a single free coordinate is used as `vs`.
 - String `by`: separate colors and a legend.
 - Several `Y`: each gets a line style and a legend entry. Without `by`, each
   also gets its own color.
-- The title defaults to the coordinates with one value, like
+- The title defaults to the inputs with one value, like
   `U=2.0, n=1.0`.
 - Axis labels come from column labels and units.
 
@@ -981,7 +1171,7 @@ values without `vs`, a single free coordinate is used as `vs`.
 
 | Option | Meaning |
 |---|---|
-| `style=lines\|points\|linespoints` | How points are drawn. Keyed values always get markers. |
+| `style=lines\|points\|linespoints` | How points are drawn. Against an exact input, points always get markers. |
 | `logx`, `logy` | Log axes. |
 | `xlim=(a, b)`, `ylim=(a, b)` | Axis limits. |
 | `title="..."`, `xlabel="..."`, `ylabel="..."` | Text. |
@@ -1020,29 +1210,31 @@ data file per plotted value, with one block per curve. With `> fig.png`,
 save NAME [as PATH] [where ...] [grid=GRID] [format=parquet|npz] [unit="..."]
 ```
 
-1. NAME must be a variable or view.
-2. Views and variables inside it are expanded, so the recipe only names
-   tables and datasets. Views with their own settings become `using(...)`.
-3. The current settings, plus NAME's own `with` settings and `grid=`, are
-   recorded in the recipe.
-4. The result is computed from the input files directly, the same way
+1. NAME must be a variable, view, or calc.
+2. NAME is translated into a core tree. Views and variables inside it are
+   expanded, so the tree's leaves are only tables and datasets. The current
+   settings, plus NAME's own `with` settings and `grid=`, are written into
+   the nodes.
+3. The result is computed from the input files directly, the same way
    `refresh` does it.
-5. glue writes `PATH.toml` and `PATH.parquet` (or `.npz`). The default path
+4. glue writes `PATH.toml` and `PATH.parquet` (or `.npz`). The default path
    is `results/NAME`. The dataset's name is the last part of PATH, and its
-   value column gets the same name.
-6. The dataset is added to the project's `[datasets]`. If a view or variable
+   output gets the same name.
+5. The dataset is added to the project's `[datasets]`. If a view or variable
    had the same name, the dataset replaces it.
 
-`where` saves only part of the data, and is recorded in the recipe.
+`where` saves only part of the data, and is recorded in the tree as a
+filter.
 
 ### 13.2 States
 
 | State | Meaning | What happens |
 |---|---|---|
 | `fresh` | Inputs match the recorded fingerprints. | The cache is used. |
-| `stale` | Input files changed, were added, or were removed, or an input dataset is stale or was recomputed. | The cache is still used, with a warning. `refresh` updates it. |
+| `stale` | Input files changed, were added, or were removed, a table file now reads something else, or an input dataset is stale or was recomputed. | The cache is still used, with a warning. `refresh` updates it. |
 | `orphaned` | An input file can't be found. | The cache still works. It can't be recomputed. |
 | `modified` | The cache file was changed after saving. | Warning. `refresh` recomputes everything. |
+| `invalidated` | `invalidate NAME` was used on it. | `refresh` recomputes everything. |
 | `no recipe` | Saved from Python data. | Can be used, not checked or refreshed. |
 
 `(pinned)` after a state means `refresh` skips it without `--force`.
@@ -1053,14 +1245,21 @@ When a project loads, every dataset that isn't fresh gets a one-line warning.
 
 Each input file's fingerprint is its size plus either its modification time
 (`fingerprint = stat`, the default and fast) or a SHA-256 hash of its
-content (`fingerprint = hash`, which survives copying files).
+content (`fingerprint = hash`, which survives copying files and git
+checkouts).
 
 `refresh NAME`:
 
 1. Refreshes stale datasets that NAME depends on first.
-2. Recomputes only the curves whose input files changed. New files add
-   curves, and removed files remove them.
+2. Recomputes only the curves whose input files changed. For each changed
+   file, glue follows its input values (like U=2.0, J=0.1, n=1.0) up the
+   tree to the result, and recomputes the result for those values. New
+   files add curves, and removed files remove them. If the values can't be
+   followed, as after `mean(y, n)`, everything is recomputed.
 3. Rewrites the cache file and the dataset TOML.
+
+It prints what it did, like `dE_fine: recomputed 3 of 44 curves, 41
+unchanged`. For a result with no axis it counts keys instead of curves.
 
 | Flag | Meaning |
 |---|---|
@@ -1070,6 +1269,38 @@ content (`fingerprint = hash`, which survives copying files).
 
 A dataset built from another dataset tracks that input as a whole. When it
 changes, all curves are recomputed.
+
+### 13.4 Caching and invalidation
+
+Within a session, glue keeps the value of every node it computes. A value
+is reused only when its node id and the fingerprints of the files under it
+both match. So after a file changes, the next plot recomputes what depends
+on it, with no command needed.
+
+With `set disk_cache true`, expensive values (resampled, differentiated,
+aligned, ...) are also saved in `.glue/cache/` and reused by later
+sessions.
+
+Some changes don't show in size and modification time: files copied with
+their times kept (`cp -p`, `rsync -t`), or a problem you know about but
+glue can't see. Mark them by hand:
+
+```
+> invalidate ed where U=2.0
+  marked 12 of 44 files of ed as changed
+  values that depend on them are recomputed when next used, and saved datasets are stale
+> status
+  dE_fine        stale      ed: 12 changed (U_2.0/J_0.0/n_0.8.dat, ...)
+> refresh dE_fine
+```
+
+`invalidate ed` without `where` marks every file. The marks are kept in
+`.glue/epochs.toml`. Deleting that file makes everything stale once, which
+is safe.
+
+`why NAME` shows why a dataset is stale, with the tree under it and each
+leaf's file count and fingerprint. `gc` deletes cached values that no view,
+calc, or dataset uses.
 
 ---
 
@@ -1104,6 +1335,8 @@ r = s.eval("dmft.E - ed.E", where="J=0.1, n=1.0", method="cubic")
 df = r.to_pandas()          # long format: U, J, n, T, value
 arr = r.to_numpy()
 r.report                    # report lines, after to_pandas()
+r.type                      # [U, J, n, T:ragged → value]
+print(r.tree())             # the core tree
 ```
 
 `eval(expr, where=None, **settings)` returns a lazy result. Nothing is read
@@ -1126,12 +1359,13 @@ functions, use `s.eval("d(dmft.E, T)")`.
 
 | Method | Meaning |
 |---|---|
-| `s.load(path)`, `s.reload()`, `s.rescan(name=None)` | As the shell commands. |
+| `s.load(path, name=None)`, `s.reload()`, `s.rescan(name=None)` | As the shell commands. `name` is as in `load FILE as NAME`. |
 | `s.define(name, expr, **settings)` | Define a variable, as `name = expr with ...`. |
-| `s.save(name, path=None, where="", grid=None, fmt=None, unit=None, recipe_only=False)` | As `save`. `where` and `grid` are text. Returns report lines. |
+| `s.save(name, path=None, where="", grid=None, fmt=None, unit=None, recipe_only=False, view=False)` | As `save`. `where` and `grid` are text. Returns report lines. |
 | `s.status_lines(name=None)` | As `status`. |
 | `s.refresh(name=None, full=False, force=False)` | As `refresh`. `name=None` means all. Returns report lines. |
 | `s.pin(name, value=True)` | As `pin` / `unpin`. |
+| `s.invalidate(name, where=())`, `s.why(name)`, `s.gc()` | As the shell commands. Return lines. |
 | `s.plot(text)` | As `plot`, like `s.plot("dE by U where J=0.1, n=1.0 > fig.png")`. Returns the saved path. |
 | `s.set_setting(key, value)`, `s.unset_setting(key)` | As `set` / `unset`. The value is text, like `"overlap(n=500)"`. |
 | `s.explain(*s.compile(expr))` | As `explain`. Returns lines. |
@@ -1162,7 +1396,10 @@ See 8.10. Functions registered with `@glue.op` in a script can be used by
 | Path | What | Safe to delete? |
 |---|---|---|
 | `results/NAME.toml`, `results/NAME.parquet` | Saved datasets | Deleting the cache file makes the dataset `modified`, and `refresh` rebuilds it. |
+| `calcs/NAME.toml` | Saved calcs | Yes, if nothing uses them. Remove the `[calcs]` entry too. |
 | `.glue/index/*.json` | File index per table, reused while folders are unchanged | Yes. It's rebuilt on demand. |
+| `.glue/cache/` | Cached intermediate values, with `disk_cache = true` | Yes. They're recomputed. |
+| `.glue/epochs.toml` | `invalidate` marks | Yes. Everything becomes stale once. |
 | `.glue/trust` | Projects you allowed to load plugins | Yes. You'll be asked again. |
 | `.glue/last_plot.png` | The last plot when there's no display | Yes |
 | `FIG.glue` | Script to recreate a figure, with `plot.save_script = true` | Yes |
@@ -1177,32 +1414,38 @@ Add `.glue/` to `.gitignore`.
 |---|---|---|
 | `curve U=2.0, ... in FILE has repeated T = 0.2959` | Two rows with the same x in one curve, often from a restarted job. | `set duplicates mean` (or `first`, `last`, `drop`), or fix the file. |
 | `dropped 4 unmatched keys (only in dmft.E)` | Some runs exist in one source only. | Nothing, if that's expected. `unmatched=error` makes it stop instead. |
-| `coordinate n not fixed. Curves for different values would overlap.` | A plot has curves for several n in one color. | Add `n=...` to `where`, or add n to `by`. |
+| `input n not fixed. Curves for different values would overlap.` | A plot has curves for several n in one color. | Add `n=...` to `where`, or add n to `by`. |
 | `FILE: file has 3 columns, but the table lists 2` | `columns` doesn't match the file. | Fix `columns` in the table file, using `"_"` for columns to skip. |
 | `unknown key 'patern'` | A typo in a TOML file. | The message lists the allowed keys. |
 | `unknown name 'dmtf'. Did you mean dmft?` | A typo in an expression. | |
 | `dmft has no column 'X'. Columns: ...` | A wrong column name. | Use one of the listed columns. |
-| `can't do arithmetic on the table dmft. Pick a column` | A table name used without a column. | `dmft.E` |
-| `A has x T but B has x beta` | Curves with different x columns. | Convert one of them in its table, for example in a SQLite `query`. |
-| `strict mode: ... are on different grids` | `strict = true` and no explicit grid. | Add `with grid=...`, or use `resample(...)`. |
+| `dmft has several outputs (E, S). Pick one, as in dmft.E` | A field with several outputs used in arithmetic. | `dmft.E` |
+| `... share more than one input that needs aligning (T, beta)` | Two fields with two ragged inputs in common. | `with align=[T]`, or resample one of them first. |
+| `swap: E isn't monotonic along T on curve ...` | A curve goes up and down, often from noise where it's flat. | Restrict the range, like `dmft.E[T=0.1:]`, or `branches=split`. |
+| `transform ...: N points collide` | The new input gives two points the same value. | Use a formula that's one-to-one on the data. |
+| `... has no input J`, `... has no input or output X` | A `where` or selector names something the field doesn't have. | Check the type with `info` or `explain`. |
+| `strict mode: ... needs aligning along T` | `strict = true` and no explicit grid. | Add `with grid=...`, or use `resample(...)`. |
 | `point 1.2 is outside the data range` | `extrapolate = error` and a grid past the data. | Use `overlap(...)`, or `extrapolate nan`. |
 | `curves with too few points for cubic (used linear)` | Some curves have fewer points than the method needs. | Nothing, or `fewpoints drop`. |
 | `... loads Python plugins ... Run with --trust` | A project with `[plugins]` used non-interactively. | `--trust`, or open it once in the shell and approve. |
-| `dataset X is stale: ed: 2 changed (...)` | Input files changed since saving. | `refresh X`. |
+| `dataset X is stale: ed: 2 changed (...)` | Input files changed since saving. | `refresh X`. `why X` shows the details. |
+| `node ... was edited or its source changed; its id is now ...` | A table file now reads something else, or a node was edited by hand. | Nothing. `refresh` rebuilds the dataset with the new definition. |
 
 For an unexpected internal error, set `GLUE_DEBUG=1` to print the full
 traceback in the shell.
 
 ---
 
-## 18. Limits of version 0.1
+## 18. Limits of version 0.2
 
-- No reductions across curves, like `mean(y, over=n)`. For now, use Python.
-- No interpolation across coordinates, like estimating U=0.15 from U=0.1 and
-  U=0.2.
+- A cached intermediate value is recomputed in full when one of its files
+  changes. Saved datasets are refreshed curve by curve.
+- The disk cache has no size limit. Use `gc`.
+- A `transform(...)` in an expression doesn't skip files. Put it in the
+  table's `[field.transform]` to skip files.
 - Error columns aren't carried through operations.
 - Units are only kept by `+`, `-`, and a few functions. No unit arithmetic.
-- No filters on value columns, like `E<0`.
-- `vs` for curves can only be the x column.
+- `nan_rows = error` isn't implemented. Rows with missing values are
+  always dropped.
 - No complex numbers.
 - A dataset used as an input to another dataset is tracked as a whole.

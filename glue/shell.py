@@ -27,11 +27,11 @@ Commands:
   set [KEY VALUE]  unset KEY       run FILE         py                  help [TOPIC]   quit
 Topics: help expressions, help functions, help settings, help plot, help COMMAND""",
     "expressions": """\
-  dmft.E                 column E of table dmft: one curve E(T) per (U, J, n)
+  dmft.E                 output E of table dmft: the field [U, J, n, T → E]
   dmft.E[U=0.1, n=0.5]   select curves; T=0.1:0.5 selects an x range
-  dmft.E - ed.E          curves are matched on shared coordinates and aligned onto a common grid
-  dmft.E / n             coordinates act as constants along each curve
-  C / T                  a bare x name takes its points from the curve it meets
+  dmft.E - ed.E          matched on shared exact inputs, and aligned along ragged T onto a common grid
+  dmft.E / n             an input's values, point by point
+  C / T                  a bare input name takes its points from the field it meets
   dmft.E @ T=0.1         evaluate each curve at a point
   (a - b) with grid=overlap(n=500), method=cubic
   dmft.E[E<0]            filters can also use outputs
@@ -46,7 +46,7 @@ Every expression is translated into a core tree. `explain EXPR` shows it.""",
   integral(y, T)                                        integral over each curve (one value per key)
   max min mean sum first last count argmax argmin       reduce along the axis: max(y) or max(y, n)
   at(y, T=0.1)  or  y @ T=0.1                           value at a point
-  stack(a=y1, b=y2, tag="source")                       stack families, adding a coordinate
+  stack(a=y1, b=y2, tag="source")                       stack fields, adding a string input
   using(expr, method=cubic, ...)                        evaluate expr with these settings
   rename(y, old=new)                                    rename inputs or outputs
   transform(y, u, U = u * 2.0)                          replace input u with a formula
@@ -77,7 +77,7 @@ Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
   options: style=lines|points|linespoints logx logy xlim=(a,b) ylim=(a,b) title="..."
            xlabel="..." ylabel="..." cmap=NAME legend=auto|off|colorbar errorbars size=(w,h)
            backend=matplotlib|gnuplot, and settings like method=cubic
-  Every coordinate must be fixed by where, used in by, or used as vs.""",
+  Every input must be fixed by where, used in by, or used as vs.""",
     "load": ("load FILE [as NAME]   load a project, table, calc, or dataset file. NAME renames a single file;\n"
              "                      for a project it is a prefix, so `load old/project.toml as old` gives old_dmft"),
     "reload": "reload              reload all loaded files from disk",
@@ -86,8 +86,8 @@ Use `set KEY VALUE`, `unset KEY`, or `with KEY=VALUE` on one statement.""",
     "edit": "edit NAME           open the file behind NAME in $EDITOR, then reload",
     "scan": "scan [NAME]         rebuild the chunk index",
     "ls": "ls                  list tables, views, datasets, and variables",
-    "info": "info NAME           schema, coordinates, and status, from the chunk index",
-    "values": "values NAME.COORD   distinct values of a coordinate",
+    "info": "info NAME           type, inputs, outputs, and status, from the chunk index",
+    "values": "values NAME.INPUT   distinct values of an input",
     "show": "show EXPR [where ...] [with ...] [limit N]",
     "explain": "explain STATEMENT   show what would be read and computed, without reading data",
     "del": "del NAME            remove a session variable",
@@ -334,10 +334,14 @@ class Shell:
         root = text_of(opts["root"]) if "root" in opts else "."
         x = text_of(opts["x"]) if "x" in opts else cols[0]
         fmt = text_of(opts["format"]) if "format" in opts else "text"
-        lines = ['glue = "0.1"', 'kind = "table"', "", "[source]", 'locator = "glob"',
+        pattern = text_of(opts["pattern"])
+        path_inputs = [m for m in re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[a-z]+)?\}", pattern) if m not in cols]
+        quoted = lambda names: "[" + ", ".join(f'"{c}"' for c in names) + "]"  # noqa: E731
+        lines = ['glue = "0.2"', 'kind = "table"', "", "[source]", 'locator = "glob"',
                  f'root = "{relpath(os.path.join(base, root), os.path.dirname(file))}"',
-                 f'pattern = "{text_of(opts["pattern"])}"', "", "[source.reader]", f'format = "{fmt}"',
-                 "columns = [" + ", ".join(f'"{c}"' for c in cols) + "]", "", "[curves]", f'x = "{x}"', ""]
+                 f'pattern = "{pattern}"', "", "[source.reader]", f'format = "{fmt}"',
+                 "columns = " + quoted(cols), "", "[field]", "inputs = " + quoted(path_inputs + [x]),
+                 "outputs = " + quoted([c for c in cols if c != x and c != "_"]), f'axis = "{x}"', ""]
         os.makedirs(os.path.dirname(file), exist_ok=True)
         with open(file, "w") as f:
             f.write("\n".join(lines))

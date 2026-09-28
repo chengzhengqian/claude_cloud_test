@@ -525,7 +525,7 @@ class Parser:
         return ListLit(items)
 
     def parse_selector(self):
-        name = self.expect_name("a coordinate name")
+        name = self.expect_name("an input name")
         tok = self.peek()
         if tok.kind != "OP" or tok.value not in ("=", "!=", "<", "<=", ">", ">="):
             self.error("expected =, !=, <, <=, > or >=")

@@ -161,3 +161,19 @@ def test_snapshot_from_python_data(proj):
     with pytest.raises(GlueError, match="no recipe"):
         D.refresh(info, log=lambda *_: None)
     assert quiet(proj / "project.toml").eval("snap").to_pandas()["snap"].tolist() == [0.0, 2.0]
+
+
+def test_missing_dataset_file_is_skipped_with_a_warning(proj):
+    s = quiet(proj / "project.toml")
+    s.save("dE")
+    os.remove(proj / "results" / "dE.toml")
+    out = []
+    from glue.session import Session
+
+    s2 = Session(log=out.append)
+    s2.load(str(proj / "project.toml"))
+    assert "dE" not in s2.datasets
+    assert any("dataset dE: results/dE.toml not found, skipped" in line for line in out)
+    s2.define("dE", "a.E - b.E")
+    s2.save("dE")
+    assert "dE" in s2.datasets
