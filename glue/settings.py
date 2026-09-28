@@ -224,6 +224,7 @@ SETTINGS = {
     "branches": (_choice(["error", "split"]), "error", str),
     "flat_tol": (_float, 1e-9, repr),
     "disk_cache": (_bool, False, lambda v: "true" if v else "false"),
+    "disk_cache_mb": (_intval, 1024, str),
     "strict": (_bool, False, lambda v: "true" if v else "false"),
     "report": (_choice(["short", "full", "off"]), "short", str),
     "fingerprint": (_choice(["stat", "hash"]), "stat", str),
@@ -256,7 +257,7 @@ def convert(key, value):
                 return _bool(value)
             if key == "flat_tol":
                 return float(value)
-            if key == "read_cache_mb":
+            if key in ("read_cache_mb", "disk_cache_mb"):
                 return _intval(int(value))
         return conv(value)
     except GlueError as e:

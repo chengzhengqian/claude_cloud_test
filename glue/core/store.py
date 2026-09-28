@@ -81,22 +81,28 @@ def salts(glue_dir, leaf_id, epochs=None):
 
 
 class Store:
-    def __init__(self, limit_mb=512, disk_dir=None):
+    def __init__(self, limit_mb=512, disk_dir=None, disk_limit_mb=1024):
         self.limit = limit_mb << 20
         self.used = 0
         self.items = OrderedDict()
         self.disk_dir = disk_dir
+        self.disk_limit = disk_limit_mb << 20
+
+    def _on_disk(self, key):
+        # only whole, unfiltered values in the plain (id, sels, fp) form go to disk
+        return bool(self.disk_dir) and len(key) == 3 and not key[1]
 
     def get(self, key):
         hit = self.items.get(key)
         if hit is not None:
             self.items.move_to_end(key)
             return hit[0]
-        if self.disk_dir and not key[1]:
+        if self._on_disk(key):
             path = self._path(key)
             if os.path.exists(path):
                 try:
                     frame = pd.read_parquet(path)
+                    os.utime(path)          # recently used, for the size limit
                 except Exception:
                     return None
                 self._put_mem(key, frame)
@@ -105,12 +111,32 @@ class Store:
 
     def put(self, key, frame, disk=False):
         self._put_mem(key, frame)
-        if disk and self.disk_dir and not key[1]:
+        if disk and self._on_disk(key):
             try:
                 os.makedirs(self.disk_dir, exist_ok=True)
                 frame.to_parquet(self._path(key), index=False)
             except Exception:
-                pass
+                return
+            self.prune_disk()
+
+    def prune_disk(self):
+        """Remove the least recently used cache files until the folder is under the size limit."""
+        if not self.disk_dir or not os.path.isdir(self.disk_dir):
+            return 0
+        files = []
+        for f in os.listdir(self.disk_dir):
+            path = os.path.join(self.disk_dir, f)
+            st = os.stat(path)
+            files.append((st.st_mtime_ns, st.st_size, path))
+        total = sum(f[1] for f in files)
+        removed = 0
+        for _, size, path in sorted(files):
+            if total <= self.disk_limit:
+                break
+            os.remove(path)
+            total -= size
+            removed += 1
+        return removed
 
     def _put_mem(self, key, frame):
         size = int(frame.memory_usage(deep=False).sum()) if len(frame.columns) else 64

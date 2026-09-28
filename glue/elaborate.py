@@ -42,6 +42,7 @@ class Elaborator:
     def __init__(self, ns, settings):
         self.ns = ns
         self.settings = settings
+        self.nan_error = False
         self._cache = {}
         self._stack = []
         self.inputs = OrderedDict()   # label -> Entity for every table and dataset used
@@ -123,6 +124,10 @@ class Elaborator:
     # ------------------------------------------------------------ dispatch
 
     def el(self, a):
+        # nan_rows=error is a check while evaluating, not part of the tree: it can
+        # stop a calculation, but never changes its values
+        if self.s("nan_rows") == "error":
+            self.nan_error = True
         if isinstance(a, lang.Num):
             return N.const(a.value, name=a.src())
         if isinstance(a, lang.Str):

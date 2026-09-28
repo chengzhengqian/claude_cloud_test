@@ -406,6 +406,7 @@ class Session:
         self.store.limit = self.settings.get("read_cache_mb") << 20
         self.store.disk_dir = os.path.join(self.glue_dir, "cache") if (
             self.glue_dir and self.settings.get("disk_cache")) else None
+        self.store.disk_limit = self.settings.get("disk_cache_mb") << 20
         READ_CACHE.limit = self.settings.get("read_cache_mb") << 20
         return Context(self.store, self.glue_dir, self.settings.get("fingerprint"), self.settings.get("report"))
 
@@ -422,6 +423,8 @@ class Session:
     def evaluate(self, node, comp=None, where=(), limit=None, keys=None):
         preds = self.where_preds(node, where)
         ctx = self.context()
+        if (comp is not None and getattr(comp, "nan_error", False)) or self.settings.get("nan_rows") == "error":
+            ctx.nan_rows = "error"
         frame = D.sort_frame(ctx.run(node, preds), node.type)
         if limit is not None:
             frame = frame.head(limit)

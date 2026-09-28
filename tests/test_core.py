@@ -339,3 +339,32 @@ def test_align_broadcasts_an_operand_with_fewer_inputs(session):
     # E = T^2 - U*n, so E - mean over n of E = -U*(n - 0.75)
     for n, g in df.groupby("n"):
         np.testing.assert_allclose(g["value"], -(n - 0.75), atol=2e-3)
+
+
+def test_nan_rows_error_stops_but_drop_gives_same_values(proj):
+    path = proj / "data" / "a" / "U_1.0" / "n_0.5.dat"
+    rows = path.read_text().splitlines()
+    rows.insert(3, "0.5 nan")
+    path.write_text("\n".join(rows) + "\n")
+    s = quiet(proj / "project.toml")
+    # a missing output stays a point with no value, and fits ignore it (core.md 1.4)
+    dropped = frame(s, "d(a.E, T)", where="U=1.0, n=0.5")
+    assert dropped["value"].isna().sum() == 1
+    ok = dropped.dropna()
+    np.testing.assert_allclose(ok["value"], 2 * ok["T"], atol=0.05)
+    with pytest.raises(GlueError, match="a: 1 rows with a missing value, for example E at U=1.0"):
+        frame(s, "d(a.E, T)", where="U=1.0, n=0.5", nan_rows="error")
+    # a check, not a parameter: the tree is the same either way
+    assert s.eval("d(a.E, T)").node.id == s.eval("d(a.E, T)", nan_rows="error").node.id
+
+
+def test_disk_cache_size_limit(proj):
+    s = quiet(proj / "project.toml")
+    s.set_setting("disk_cache", "true")
+    cache = proj / ".glue" / "cache"
+    frame(s, "d(a.E, T)")
+    assert cache.is_dir() and os.listdir(cache)
+    s.set_setting("disk_cache_mb", "0")
+    s.store.clear()
+    frame(s, "d(b.E, T)")
+    assert os.listdir(cache) == []

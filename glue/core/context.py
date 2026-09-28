@@ -2,6 +2,7 @@
 
 from . import formula as F
 from .nodes import DatasetNode, SourceNode
+from ..errors import GlueError
 from .report import Report
 from .store import Store, combine, load_epochs, salts, sels_sig
 
@@ -18,6 +19,7 @@ class Context:
         self.epochs = load_epochs(glue_dir)
         self._digests = {}
         self._fps = {}
+        self.nan_rows = "drop"     # "error": stop when a source has rows with missing values
 
     # --- fingerprints
 
@@ -44,8 +46,11 @@ class Context:
     def value(self, node, sels=()):
         sels = list(sels)
         key = (node.id, sels_sig(sels), self.fp(node))
+        if self.nan_rows == "error":
+            key += ("nan_rows=error",)   # values cached without the check don't count as checked
         hit = self.store.get(key)
         if hit is not None:
+            self._check_nan(node, hit)
             return hit
         ins = {}
         if node.eval_children:
@@ -54,10 +59,23 @@ class Context:
                 s = cs.get(path, [])
                 ins[path] = None if s is None else self.value(child, s)
         frame = node.compute(self, ins, sels)
+        self._check_nan(node, frame)
         applicable = [p for p in sels if p.name in frame.columns]
         frame = F.apply_preds(applicable, frame)
         self.store.put(key, frame, disk=node.op in EXPENSIVE)
         return frame
+
+    def _check_nan(self, node, frame):
+        if self.nan_rows != "error" or not isinstance(node, SourceNode) or not len(frame):
+            return
+        cols = [c for c in node.type.input_names + node.type.output_names if c in frame.columns]
+        bad = frame[cols].isna().any(axis=1)
+        if bad.any():
+            row = frame[bad].iloc[0]
+            missing = [c for c in cols if row[c] != row[c]]
+            key = ", ".join(f"{c}={row[c]}" for c in node.type.input_names if c in cols and c not in missing)
+            raise GlueError(f"{node.table.name}: {int(bad.sum())} rows with a missing value, for example "
+                            f"{', '.join(missing)} at {key}. Set nan_rows drop to skip them.")
 
     def run(self, root, preds=()):
         """Evaluate root, pushing down the filters that can be pushed (law L1)."""

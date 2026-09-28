@@ -378,6 +378,8 @@ def save(session, name, path=None, where=(), grid=None, fmt=None, unit=None, rec
     info.cache_file = f"{path}.{fmt}"
     info.format = fmt
     ctx = session.context()
+    if el.nan_error:
+        ctx.nan_rows = "error"
     missing = [label for label, e in el.inputs.items() if not e.table.path]
     if missing:
         if recipe_only:
